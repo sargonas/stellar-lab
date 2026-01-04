@@ -17,11 +17,13 @@
 #
 # Format: host:port or ip:port
 # Examples:
-# seed1.example.com:8080
-# 123.456.789.0:8080
+# seed1.example.com:7876
+# 123.456.789.0:7876
 
 # === SEED NODES ===
 # (Add seed nodes below this line)
 
 # No seed nodes yet - be the first to volunteer!
 # See SEED-NODES.md for how to run a seed node
+
+stellar-lab.sargonas.com

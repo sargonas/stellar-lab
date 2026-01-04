@@ -32,10 +32,11 @@ type StellarTransport struct {
 	peerVersions  map[uuid.UUID]*ProtocolVersion // Track peer versions for compatibility
 	mu            sync.RWMutex
 	httpClient    *http.Client
+	listenAddr   string
 }
 
 // NewStellarTransport creates a new transport protocol handler
-func NewStellarTransport(system *System, storage *Storage) *StellarTransport {
+func NewStellarTransport(system *System, storage *Storage, listenAddr string) *StellarTransport {
 	g := &StellarTransport{
 		localSystem:  system,
 		storage:      storage,
@@ -44,6 +45,7 @@ func NewStellarTransport(system *System, storage *Storage) *StellarTransport {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		listenAddr: listenAddr,
 	}
 
 	// Load existing peers from storage
@@ -56,8 +58,19 @@ func NewStellarTransport(system *System, storage *Storage) *StellarTransport {
 	return g
 }
 
-// Start begins the gossip protocol loops
+// Start begins the gossip protocol loops and peer transport server
 func (g *StellarTransport) Start() {
+	// Start peer-to-peer HTTP server on separate port
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/transport", g.HandleIncomingMessage)
+
+		log.Printf("Peer transport listening on %s", g.listenAddr)
+		if err := http.ListenAndServe(g.listenAddr, mux); err != nil {
+			log.Printf("Peer transport server error: %v", err)
+		}
+	}()
+
 	// Periodic gossip with random peers
 	go g.gossipLoop(30 * time.Second)
 
@@ -332,6 +345,30 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 	}
 
 	return nil
+}
+
+// HandleIncomingMessage handles HTTP requests from peers
+func (g *StellarTransport) HandleIncomingMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var msg TransportMessage
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, "Invalid message", http.StatusBadRequest)
+		return
+	}
+
+	// Process the message using existing HandleMessage logic
+	if err := g.HandleMessage(msg); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Send success response
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // GetRandomPeerSystem returns a random peer's system info for clustering

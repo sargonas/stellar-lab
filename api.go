@@ -58,7 +58,6 @@ func (api *API) setupRoutes() {
 	api.router.HandleFunc("/peers/add", api.addPeer).Methods("POST")
 
 	// Transport protocol endpoint (renamed from gossip)
-	api.router.HandleFunc("/transport", api.handleTransport).Methods("POST")
 	api.router.HandleFunc("/gossip", api.handleTransport).Methods("POST") // Keep old endpoint for compatibility
 
 	// Health check

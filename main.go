@@ -202,7 +202,8 @@ func main() {
 	// Command-line flags
 	var (
 		name       = flag.String("name", "", "Name for this star system (required)")
-		address    = flag.String("address", "localhost:8080", "Address to bind API server (host:port)")
+		address    = flag.String("address", "0.0.0.0:8080", "Address to bind web UI server (host:port)")
+		peerPort   = flag.String("peer-port", "7867", "Port for peer-to-peer mesh communication")
 		dbPath     = flag.String("db", "stellar-mesh.db", "Path to SQLite database file")
 		bootstrap  = flag.String("bootstrap", "", "Bootstrap peer address (host:port)")
 		systemSeed = flag.String("seed", "", "Optional seed for semi-deterministic UUID (same seed = same UUID on this hardware)")
@@ -211,6 +212,13 @@ func main() {
 		compactDays = flag.Int("compact-days", 7, "Days of attestations to keep when compacting")
 	)
 	flag.Parse()
+
+	// Construct peer address using same host as web UI but different port
+	webHost := *address
+	if colonIdx := strings.LastIndex(webHost, ":"); colonIdx != -1 {
+	    webHost = webHost[:colonIdx]
+	}
+	peerAddress := webHost + ":" + *peerPort
 
 	// Handle manual compaction mode
 	if *compact {
@@ -386,7 +394,7 @@ func main() {
 	}
 
 	// Initialize stellar transport protocol
-	transport := NewStellarTransport(system, storage)
+	transport := NewStellarTransport(system, storage, peerAddress)
 	transport.Start()
 	log.Println("Stellar transport protocol started")
 
@@ -417,7 +425,9 @@ func main() {
 	}()
 
 	// Start API server (blocking)
-	log.Printf("Star system '%s' is now online at %s", system.Name, *address)
+	log.Printf("Star system '%s' is now online", system.Name)
+	log.Printf("  Web UI: http://%s", *address)
+	log.Printf("  Peer port: %s", peerAddress)
 	log.Printf("API endpoints available at http://%s", *address)
 	if err := api.Start(*address); err != nil {
 		log.Fatalf("API server failed: %v", err)
