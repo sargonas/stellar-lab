@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # First node - Bootstrap node
+  node1:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - node1-data:/root/data
+    command: [
+      "-name", "Sol System",
+      "-address", "0.0.0.0:8080",
+      "-db", "/root/data/stellar-mesh.db"
+    ]
+    networks:
+      - stellar-net
+
+  # Second node - Connects to node1
+  node2:
+    build: .
+    ports:
+      - "8081:8080"
+    volumes:
+      - node2-data:/root/data
+    command: [
+      "-name", "Alpha Centauri",
+      "-address", "0.0.0.0:8080",
+      "-db", "/root/data/stellar-mesh.db",
+      "-bootstrap", "node1:8080"
+    ]
+    depends_on:
+      - node1
+    networks:
+      - stellar-net
+
+  # Third node - Connects to node1
+  node3:
+    build: .
+    ports:
+      - "8082:8080"
+    volumes:
+      - node3-data:/root/data
+    command: [
+      "-name", "Proxima",
+      "-address", "0.0.0.0:8080",
+      "-db", "/root/data/stellar-mesh.db",
+      "-bootstrap", "node1:8080"
+    ]
+    depends_on:
+      - node1
+    networks:
+      - stellar-net
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+
+networks:
+  stellar-net:
+    driver: bridge

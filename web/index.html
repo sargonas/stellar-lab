@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stellar Mesh - {{.Name}}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: monospace; 
+            background: #000; 
+            color: #0f0; 
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #0ff; margin-bottom: 20px; font-size: 24px; }
+        h2 { color: #0ff; margin: 20px 0 10px; font-size: 18px; border-bottom: 1px solid #0f0; }
+        .stat { margin: 10px 0; }
+        .label { color: #888; display: inline-block; width: 200px; }
+        .value { color: #fff; }
+        .good { color: #0f0; }
+        .warn { color: #ff0; }
+        .bad { color: #f00; }
+        input { 
+            background: #111; 
+            border: 1px solid #0f0; 
+            color: #0f0; 
+            padding: 8px; 
+            font-family: monospace;
+            width: 300px;
+        }
+        button {
+            background: #0f0;
+            color: #000;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-family: monospace;
+            font-weight: bold;
+        }
+        button:hover { background: #0ff; }
+        .peer { 
+            background: #111; 
+            padding: 8px; 
+            margin: 5px 0;
+            border-left: 2px solid #0f0;
+        }
+        .refresh { margin: 20px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { padding: 8px; text-align: left; border: 1px solid #333; }
+        th { background: #111; color: #0ff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⭐ STELLAR MESH NODE</h1>
+        
+        <div class="refresh">
+            <button onclick="location.reload()">REFRESH STATUS</button>
+        </div>
+
+        <h2>SYSTEM IDENTITY</h2>
+        <div class="stat">
+            <span class="label">Name:</span>
+            <span class="value" id="system-name">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">UUID:</span>
+            <span class="value" id="system-id">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Stars:</span>
+            <span class="value" id="star-info">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Planets:</span>
+            <span class="value" id="planet-info">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Coordinates:</span>
+            <span class="value" id="coordinates">Loading...</span>
+        </div>
+
+        <h2>REPUTATION & NETWORK STATUS</h2>
+        <div class="stat">
+            <span class="label">Rank:</span>
+            <span class="value good" id="rank">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Reputation Points:</span>
+            <span class="value" id="reputation">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Uptime:</span>
+            <span class="value" id="uptime">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Verified Attestations:</span>
+            <span class="value" id="attestations">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Critical Bridge:</span>
+            <span class="value" id="bridge">Loading...</span>
+        </div>
+
+        <h2>NETWORK</h2>
+        <div class="stat">
+            <span class="label">Connected Peers:</span>
+            <span class="value" id="peer-count">Loading...</span>
+        </div>
+        <div class="stat">
+            <span class="label">Total Systems in Galaxy:</span>
+            <span class="value" id="galaxy-size">Estimated from peers</span>
+        </div>
+
+        <h2>NEIGHBORING SYSTEMS</h2>
+        <div id="peers">Loading...</div>
+
+        <h2>PLANET DETAILS</h2>
+        <table id="planet-table" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Orbit (AU)</th>
+                    <th>Mass (Earths)</th>
+                    <th>Habitable</th>
+                </tr>
+            </thead>
+            <tbody id="planet-tbody"></tbody>
+        </table>
+
+        <script>
+            async function loadData() {
+                try {
+                    // Load system info
+                    const sysResp = await fetch('/system');
+                    const system = await sysResp.json();
+                    
+                    document.getElementById('system-name').textContent = system.name;
+                    document.getElementById('system-id').textContent = system.id;
+                    
+                    // Star info
+                    let starInfo = system.stars.primary.class + ' ' + system.stars.primary.description;
+                    if (system.stars.is_binary) starInfo += ' + ' + system.stars.secondary.class;
+                    if (system.stars.is_trinary) starInfo += ' + ' + system.stars.tertiary.class;
+                    starInfo += ' (' + system.stars.count + ' star';
+                    if (system.stars.count > 1) starInfo += 's';
+                    starInfo += ')';
+                    document.getElementById('star-info').textContent = starInfo;
+                    
+                    // Coordinates
+                    const coords = `(${system.x.toFixed(2)}, ${system.y.toFixed(2)}, ${system.z.toFixed(2)})`;
+                    document.getElementById('coordinates').textContent = coords;
+                    
+                    // Planets
+                    if (system.planets && system.planets.planets) {
+                        const p = system.planets;
+                        let planetInfo = p.planet_count + ' planet';
+                        if (p.planet_count !== 1) planetInfo += 's';
+                        if (p.habitable_count > 0) {
+                            planetInfo += ', ' + p.habitable_count + ' habitable';
+                        }
+                        document.getElementById('planet-info').textContent = planetInfo;
+                        
+                        // Show planet table
+                        const tbody = document.getElementById('planet-tbody');
+                        tbody.innerHTML = '';
+                        p.planets.forEach(planet => {
+                            const row = tbody.insertRow();
+                            row.insertCell(0).textContent = planet.name;
+                            row.insertCell(1).textContent = planet.type;
+                            row.insertCell(2).textContent = planet.orbit_au.toFixed(2);
+                            row.insertCell(3).textContent = planet.mass_earths.toFixed(2);
+                            const habCell = row.insertCell(4);
+                            habCell.textContent = planet.is_habitable ? 'YES' : 'no';
+                            if (planet.is_habitable) habCell.className = 'good';
+                        });
+                        document.getElementById('planet-table').style.display = 'table';
+                    }
+                    
+                    // Load reputation
+                    const repResp = await fetch('/reputation');
+                    const rep = await repResp.json();
+                    
+                    if (rep.summary) {
+                        document.getElementById('rank').textContent = rep.summary.rank || 'Unranked';
+                        document.getElementById('reputation').textContent = Math.floor(rep.summary.reputation_points || 0);
+                        document.getElementById('uptime').textContent = 
+                            rep.summary.uptime_days + ' days, ' + 
+                            (rep.summary.uptime_hours % 24) + ' hours';
+                        document.getElementById('attestations').textContent = 
+                            rep.contribution.proof.total_proofs + ' verified';
+                        document.getElementById('bridge').textContent = 
+                            rep.summary.is_critical_bridge ? 'YES (Bonus points!)' : 'no';
+                        
+                        const bridgeEl = document.getElementById('bridge');
+                        if (rep.summary.is_critical_bridge) {
+                            bridgeEl.className = 'value good';
+                        }
+                    }
+                    
+                    // Load peers
+                    const peerResp = await fetch('/peers');
+                    const peerData = await peerResp.json();
+                    
+                    document.getElementById('peer-count').textContent = peerData.count;
+                    
+                    // Estimate galaxy size (rough guess based on average connectivity)
+                    const estimatedSize = Math.max(peerData.count * 3, peerData.count + 10);
+                    document.getElementById('galaxy-size').textContent = 
+                        '~' + estimatedSize + ' systems (estimated)';
+                    
+                    const peersDiv = document.getElementById('peers');
+                    if (peerData.count === 0) {
+                        peersDiv.innerHTML = '<div class="peer">No peers connected yet</div>';
+                    } else {
+                        peersDiv.innerHTML = '';
+                        peerData.peers.forEach(peer => {
+                            const div = document.createElement('div');
+                            div.className = 'peer';
+                            div.textContent = `System ${peer.system_id.substring(0, 8)}... @ ${peer.address}`;
+                            peersDiv.appendChild(div);
+                        });
+                    }
+                    
+                } catch (err) {
+                    console.error('Failed to load data:', err);
+                    document.body.innerHTML += '<p class="bad">ERROR: Failed to load data from node</p>';
+                }
+            }
+            
+            loadData();
+            
+            // Auto-refresh every 30 seconds
+            setInterval(loadData, 30000);
+        </script>
+    </div>
+</body>
+</html>
