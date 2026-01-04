@@ -313,12 +313,11 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 	
 	// Update peer last seen time
 	if msg.System != nil {
-		peer := &Peer{
-			SystemID:   msg.System.ID,
-			Address:    msg.System.Address,
-			LastSeenAt: time.Now(),
-		}
-
+    	peer := &Peer{
+        	SystemID:   msg.System.ID,
+        	Address:    msg.System.PeerAddress,
+        	LastSeenAt: time.Now(),
+    	}
 		g.mu.Lock()
 		g.peers[peer.SystemID] = peer
 		g.mu.Unlock()

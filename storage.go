@@ -83,6 +83,7 @@ func (s *Storage) createTables() error {
 		created_at INTEGER NOT NULL,
 		last_seen_at INTEGER NOT NULL,
 		address TEXT NOT NULL,
+		peer_address TEXT NOT NULL,
 		-- Cryptographic identity (keys stored as base64)
 		public_key TEXT NOT NULL,
 		private_key TEXT NOT NULL
@@ -204,16 +205,16 @@ func (s *Storage) SaveSystem(sys *System) error {
 			secondary_class, secondary_description, secondary_color, secondary_temperature, secondary_luminosity,
 			tertiary_class, tertiary_description, tertiary_color, tertiary_temperature, tertiary_luminosity,
 			is_binary, is_trinary, star_count,
-			created_at, last_seen_at, address, public_key, private_key
+			created_at, last_seen_at, address, peer_address, public_key, private_key
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
 		sys.Stars.Primary.Class, sys.Stars.Primary.Description, sys.Stars.Primary.Color,
 		sys.Stars.Primary.Temperature, sys.Stars.Primary.Luminosity,
 		secondaryClass, secondaryDesc, secondaryColor, secondaryTemp, secondaryLum,
 		tertiaryClass, tertiaryDesc, tertiaryColor, tertiaryTemp, tertiaryLum,
 		isBinary, isTrinary, sys.Stars.Count,
-		sys.CreatedAt.Unix(), sys.LastSeenAt.Unix(), sys.Address, publicKey, privateKey)
+		sys.CreatedAt.Unix(), sys.LastSeenAt.Unix(), sys.Address, sys.PeerAddress, publicKey, privateKey)
 	return err
 }
 
@@ -240,7 +241,7 @@ func (s *Storage) LoadSystem() (*System, error) {
 			secondary_class, secondary_description, secondary_color, secondary_temperature, secondary_luminosity,
 			tertiary_class, tertiary_description, tertiary_color, tertiary_temperature, tertiary_luminosity,
 			is_binary, is_trinary, star_count,
-			created_at, last_seen_at, address, public_key, private_key
+			created_at, last_seen_at, address, peer_address, public_key, private_key
 		FROM system LIMIT 1
 	`).Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
 		&sys.Stars.Primary.Class, &sys.Stars.Primary.Description, &sys.Stars.Primary.Color,
@@ -248,7 +249,7 @@ func (s *Storage) LoadSystem() (*System, error) {
 		&secondaryClass, &secondaryDesc, &secondaryColor, &secondaryTemp, &secondaryLum,
 		&tertiaryClass, &tertiaryDesc, &tertiaryColor, &tertiaryTemp, &tertiaryLum,
 		&isBinary, &isTrinary, &starCount,
-		&createdAt, &lastSeenAt, &sys.Address, &publicKeyB64, &privateKeyB64)
+		&createdAt, &lastSeenAt, &sys.Address, &sys.PeerAddress, &publicKeyB64, &privateKeyB64)
 
 	if err != nil {
 		return nil, err

@@ -326,6 +326,7 @@ func main() {
 			ID:         newID,
 			Name:       *name,
 			Address:    *address,
+			PeerAddress: peerAddress,
 			CreatedAt:  time.Now(),
 			LastSeenAt: time.Now(),
 			Keys:       keys,
@@ -387,9 +388,10 @@ func main() {
 		}
 		
 		// Update address if changed
-		if system.Address != *address {
-			system.Address = *address
-			storage.SaveSystem(system)
+		if system.Address != *address || system.PeerAddress != peerAddress {
+    		system.Address = *address
+    		system.PeerAddress = peerAddress
+    		storage.SaveSystem(system)
 		}
 	}
 

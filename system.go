@@ -40,6 +40,7 @@ type System struct {
 	LastSeenAt  time.Time         `json:"last_seen_at"`
 	Address     string            `json:"address"` // network address (host:port)
 	Keys        *KeyPair          `json:"-"`       // Cryptographic keys (never serialized)
+	PeerAddress string         `json:"peer_address"` // Peer mesh address
 }
 
 // generateSingleStar creates a deterministic star from a seed
