@@ -17,10 +17,24 @@ A lightweight, distributed mesh network where each node represents a star system
 
 ## Quick Start
 
-### Build
+### Prerequisites
+
+- Go 1.18 or higher
+- GCC (for SQLite CGO compilation)
+  - **macOS**: `xcode-select --install`
+  - **Linux**: `sudo apt-get install build-essential` (Ubuntu/Debian)
+  - **Windows**: Install MinGW or use WSL
+
+### Development Setup
 
 ```bash
-go mod download
+# Clone or extract the repository
+cd stellar-mesh
+
+# Download dependencies and create go.sum
+go mod tidy
+
+# Build the binary
 go build -o stellar-mesh
 ```
 
@@ -30,10 +44,48 @@ go build -o stellar-mesh
 ./stellar-mesh -name "Sol System" -address "localhost:8080"
 ```
 
+Visit http://localhost:8080 to see the web interface.
+
+### Joining the Network
+
+**Automatic Discovery (recommended for public nodes):**
+
+```bash
+# Just run - automatically discovers peers via seed nodes
+./stellar-mesh -name "My System"
+```
+
+The node will automatically connect to available seed nodes and discover the network.
+
+**Manual Bootstrap:**
+
+```bash
+# Connect to a specific peer
+./stellar-mesh -name "Alpha Centauri" -address "localhost:8081" -bootstrap "localhost:8080"
+```
+
 ### Run a Second Node (Connected to First)
 
 ```bash
 ./stellar-mesh -name "Alpha Centauri" -address "localhost:8081" -bootstrap "localhost:8080"
+```
+
+### Using Docker (Recommended for Multi-Node Testing)
+
+```bash
+# Build and start 3 nodes
+docker-compose up -d
+
+# Access nodes
+# Node 1: http://localhost:8080
+# Node 2: http://localhost:8081
+# Node 3: http://localhost:8082
+
+# View logs
+docker-compose logs -f
+
+# Stop all nodes
+docker-compose down
 ```
 
 ## Command-Line Flags
@@ -41,7 +93,13 @@ go build -o stellar-mesh
 - `-name`: Name of your star system (required)
 - `-address`: Host:port to bind the API server (default: localhost:8080)
 - `-db`: Path to SQLite database file (default: stellar-mesh.db)
-- `-bootstrap`: Address of a peer to connect to (optional)
+- `-bootstrap`: Address of a peer to connect to (optional - if not provided, uses seed nodes)
+
+**Network Discovery:**
+- If `-bootstrap` is not provided, the node will automatically fetch the seed list from GitHub and connect to available seeds
+- Seed list is community-maintained in `SEED-NODES.txt` - submit a PR to add your node!
+- Once connected to any peer, the node will discover more peers organically through peer exchange
+- See [SEED-NODES.md](SEED-NODES.md) for information about running a seed node
 
 ## API Endpoints
 
@@ -245,8 +303,73 @@ stellar-mesh/
 ### Dependencies
 
 - `github.com/google/uuid` - UUID generation
-- `github.com/mattn/go-sqlite3` - SQLite driver
+- `github.com/mattn/go-sqlite3` - SQLite driver (requires CGO)
 - `github.com/gorilla/mux` - HTTP router
+
+## Troubleshooting
+
+### Build Errors: "missing go.sum entry"
+
+```bash
+# Run this first to download dependencies
+go mod tidy
+
+# Then build
+go build -o stellar-mesh
+```
+
+### Build Errors: "gcc: command not found" or SQLite compilation errors
+
+SQLite requires CGO (C compiler). Install build tools:
+
+**macOS:**
+```bash
+xcode-select --install
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get update
+sudo apt-get install build-essential
+```
+
+**Windows:**
+- Install MinGW-w64, or
+- Use WSL (Windows Subsystem for Linux)
+
+### "Port already in use"
+
+```bash
+# Use a different port
+./stellar-mesh -address "localhost:8081"
+
+# Or find what's using the port
+lsof -i :8080  # macOS/Linux
+netstat -ano | findstr :8080  # Windows
+```
+
+### Nodes not connecting
+
+```bash
+# Verify bootstrap node is running
+curl http://localhost:8080/api/system
+
+# Check firewall allows connections
+# Make sure addresses are correct (use actual IP for remote nodes)
+
+# For Docker, nodes connect automatically via docker-compose network
+```
+
+### Database locked errors
+
+```bash
+# Only one process can write to SQLite at a time
+# Make sure you're not running multiple instances with the same database file
+
+# Use different database files for each node:
+./stellar-mesh -db node1.db -address :8080
+./stellar-mesh -db node2.db -address :8081
+```
 
 ## License
 

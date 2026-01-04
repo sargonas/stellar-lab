@@ -163,6 +163,52 @@ func CalculateVerifiableReputation(proof *AttestationProof) float64 {
 	return verifiedPoints
 }
 
+// CalculateFullReputation calculates reputation from both recent attestations and historical summaries
+func CalculateFullReputation(proof *AttestationProof, summaries []AttestationSummary) float64 {
+    // Recent attestations (full weight)
+    recentScore := float64(proof.TotalProofs) * 1.0
+
+    // Unique peers from recent attestations
+    uniquePeers := make(map[string]bool)
+    for _, att := range proof.Attestations {
+        uniquePeers[att.FromSystemID.String()] = true
+        uniquePeers[att.ToSystemID.String()] = true
+    }
+
+    // Historical summaries (decayed weight based on age)
+    historicalScore := 0.0
+    for _, summary := range summaries {
+        // Track unique peers from history too
+        uniquePeers[summary.PeerSystemID] = true
+
+        // Calculate age-based decay
+        periodEnd := time.Unix(summary.PeriodEnd, 0)
+        ageInDays := time.Since(periodEnd).Hours() / 24
+
+        // Decay formula: 100% for first 30 days, then linear decay to 50% floor at 1 year
+        var decay float64
+        if ageInDays <= 30 {
+            decay = 1.0
+        } else if ageInDays >= 365 {
+            decay = 0.5
+        } else {
+            // Linear interpolation between 30 days (1.0) and 365 days (0.5)
+            decay = 1.0 - ((ageInDays - 30) / (365 - 30) * 0.5)
+        }
+
+        totalCount := float64(summary.TotalCount())
+        historicalScore += totalCount * decay
+    }
+
+    // Peer diversity bonus (more unique peers = more valuable)
+    diversityBonus := float64(len(uniquePeers)) * 10.0
+
+    // Combine scores
+    totalScore := recentScore + historicalScore + diversityBonus
+
+    return totalScore
+}
+
 // VerifiableNetworkContribution is the decentralized replacement for NetworkContribution
 type VerifiableNetworkContribution struct {
 	SystemID       uuid.UUID        `json:"system_id"`

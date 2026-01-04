@@ -36,7 +36,6 @@ type System struct {
 	Y           float64           `json:"y"`
 	Z           float64           `json:"z"`
 	Stars       MultiStarSystem   `json:"stars"`
-	Planets     PlanetarySystem   `json:"planets"`
 	CreatedAt   time.Time         `json:"created_at"`
 	LastSeenAt  time.Time         `json:"last_seen_at"`
 	Address     string            `json:"address"` // network address (host:port)
@@ -292,6 +291,5 @@ func NewSystem(name string, address string, nearbySystem *System) *System {
 	}
 	s.GenerateCoordinates(nearbySystem)
 	s.GenerateMultiStarSystem()
-	s.Planets = s.GeneratePlanetarySystem()
 	return s
 }

@@ -80,10 +80,6 @@ func (v ProtocolVersion) SupportsFeature(feature string) bool {
 		// Attestations introduced in 1.0.0
 		return v.Major >= 1
 
-	case "planetary_systems":
-		// Planets introduced in 1.0.0
-		return v.Major >= 1
-
 	case "multi_star_systems":
 		// Multi-star introduced in 1.0.0
 		return v.Major >= 1
@@ -122,7 +118,6 @@ func NegotiateFeatures(local, remote ProtocolVersion) *FeatureNegotiation {
 	// Check each feature
 	features := []string{
 		"attestations",
-		"planetary_systems",
 		"multi_star_systems",
 		"legacy_gossip",
 	}
@@ -155,7 +150,7 @@ func (fn *FeatureNegotiation) UseAttestations() bool {
 type VersionInfo struct {
 	Protocol    string `json:"protocol_version"`    // "1.0.0"
 	Application string `json:"application_version"` // "1.0.0"
-	Features    []string `json:"supported_features"` // ["attestations", "planets", ...]
+	Features    []string `json:"supported_features"` // ["attestations", "multi_star_systems", ...]
 }
 
 // GetVersionInfo returns current node's version info
@@ -165,9 +160,6 @@ func GetVersionInfo() VersionInfo {
 	// List all features this version supports
 	if CurrentProtocolVersion.SupportsFeature("attestations") {
 		features = append(features, "attestations")
-	}
-	if CurrentProtocolVersion.SupportsFeature("planetary_systems") {
-		features = append(features, "planetary_systems")
 	}
 	if CurrentProtocolVersion.SupportsFeature("multi_star_systems") {
 		features = append(features, "multi_star_systems")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -243,7 +244,7 @@ func (g *StellarTransport) sendMessage(address string, msg TransportMessage) err
 	}
 
 	url := fmt.Sprintf("http://%s/transport", address)
-	resp, err := g.httpClient.Post(url, "application/json", nil)
+	resp, err := g.httpClient.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -288,8 +289,13 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 	if err := g.storage.SaveAttestation(msg.Attestation); err != nil {
 		log.Printf("Failed to save attestation: %v", err)
 	} else {
-		log.Printf("Verified and stored attestation from %s (type: %s)", 
-			msg.Attestation.FromSystemID, msg.Attestation.MessageType)
+		log.Printf("Verified and stored attestation from %s (%s) (type: %s)",
+			msg.Attestation.FromSystemID, msg.System.Name, msg.Attestation.MessageType)
+	}
+
+	// Cache peer's system info for map visualization
+	if msg.System != nil {
+		g.storage.SavePeerSystem(msg.System)
 	}
 	
 	// Update peer last seen time

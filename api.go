@@ -8,24 +8,21 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/google/uuid"
 )
 
 type API struct {
 	transport  *StellarTransport
 	storage    *Storage
 	system     *System
-	reputation *DecentralizedReputation
 	router     *mux.Router
 }
 
 // NewAPI creates a new API server
-func NewAPI(system *System, transport *StellarTransport, storage *Storage, reputation *DecentralizedReputation) *API {
+func NewAPI(system *System, transport *StellarTransport, storage *Storage) *API {
 	api := &API{
 		system:     system,
 		transport:  transport,
 		storage:    storage,
-		reputation: reputation,
 		router:     mux.NewRouter(),
 	}
 
@@ -37,6 +34,7 @@ func (api *API) setupRoutes() {
 	// Web interface (root)
 	api.router.HandleFunc("/", api.ServeWebInterface).Methods("GET")
 	api.router.HandleFunc("/add-peer", api.HandleAddPeerForm).Methods("POST")
+	api.router.HandleFunc("/map", api.ServeMapPage).Methods("GET")
 	
 	// JSON API endpoints (prefixed with /api)
 	api.router.HandleFunc("/api/system", api.getSystemInfo).Methods("GET")
@@ -45,6 +43,8 @@ func (api *API) setupRoutes() {
 	api.router.HandleFunc("/api/reputation", api.getReputation).Methods("GET")
 	api.router.HandleFunc("/api/reputation/verify", api.verifyReputation).Methods("POST")
 	api.router.HandleFunc("/api/version", api.getVersion).Methods("GET")
+	api.router.HandleFunc("/api/map", api.getMapData).Methods("GET")
+	api.router.HandleFunc("/api/database/stats", api.getDatabaseStats).Methods("GET")
 
 	// Legacy endpoints (for backward compatibility)
 	api.router.HandleFunc("/system", api.getSystemInfo).Methods("GET")
@@ -340,4 +340,100 @@ func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func respondError(w http.ResponseWriter, status int, message string) {
 	respondJSON(w, status, map[string]string{"error": message})
+}
+
+// getMapData returns all known systems and connections for map visualization
+func (api *API) getMapData(w http.ResponseWriter, r *http.Request) {
+	type MapSystem struct {
+		ID        string  `json:"id"`
+		Name      string  `json:"name"`
+		X         float64 `json:"x"`
+		Y         float64 `json:"y"`
+		Z         float64 `json:"z"`
+		StarColor string  `json:"star_color"`
+		StarClass string  `json:"star_class"`
+		IsLocal   bool    `json:"is_local"`
+	}
+
+	type MapConnection struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+
+	type MapData struct {
+		Systems     []MapSystem     `json:"systems"`
+		Connections []MapConnection `json:"connections"`
+		Center      MapSystem       `json:"center"` // Local system for centering view
+	}
+
+	systems := []MapSystem{}
+	connections := []MapConnection{}
+
+	// Add local system
+	localSys := MapSystem{
+		ID:        api.system.ID.String(),
+		Name:      api.system.Name,
+		X:         api.system.X,
+		Y:         api.system.Y,
+		Z:         api.system.Z,
+		StarColor: api.system.Stars.Primary.Color,
+		StarClass: api.system.Stars.Primary.Class,
+		IsLocal:   true,
+	}
+	systems = append(systems, localSys)
+
+	// Add all known peers
+	peers := api.transport.GetPeers()
+	for _, peer := range peers {
+		// Try to get cached system info for this peer
+		peerSys, err := api.storage.GetPeerSystem(peer.SystemID)
+		if err != nil || peerSys == nil {
+			// No cached info, use basic data
+			systems = append(systems, MapSystem{
+				ID:        peer.SystemID.String(),
+				Name:      peer.SystemID.String()[:8] + "...",
+				X:         0, // Unknown
+				Y:         0,
+				Z:         0,
+				StarColor: "#FFFFFF",
+				StarClass: "?",
+				IsLocal:   false,
+			})
+		} else {
+			systems = append(systems, MapSystem{
+				ID:        peerSys.ID.String(),
+				Name:      peerSys.Name,
+				X:         peerSys.X,
+				Y:         peerSys.Y,
+				Z:         peerSys.Z,
+				StarColor: peerSys.Stars.Primary.Color,
+				StarClass: peerSys.Stars.Primary.Class,
+				IsLocal:   false,
+			})
+		}
+
+		// Add connection from local to peer
+		connections = append(connections, MapConnection{
+			From: api.system.ID.String(),
+			To:   peer.SystemID.String(),
+		})
+	}
+
+	mapData := MapData{
+		Systems:     systems,
+		Connections: connections,
+		Center:      localSys,
+	}
+
+	respondJSON(w, http.StatusOK, mapData)
+}
+
+// getDatabaseStats returns database statistics
+func (api *API) getDatabaseStats(w http.ResponseWriter, r *http.Request) {
+    stats, err := api.storage.GetDatabaseStats()
+    if err != nil {
+        respondError(w, http.StatusInternalServerError, "Failed to get stats")
+        return
+    }
+    respondJSON(w, http.StatusOK, stats)
 }
