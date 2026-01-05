@@ -41,14 +41,11 @@ func NewStorage(dbPath string) (*Storage, error) {
 		return nil, err
 	}
 
-	// Enable WAL mode for better concurrent access
-	db.Exec("PRAGMA journal_mode=WAL")
-	db.Exec("PRAGMA busy_timeout=5000")
-
 	storage := &Storage{db: db}
 	if err := storage.createTables(); err != nil {
 		return nil, err
 	}
+
 	return storage, nil
 }
 
@@ -141,6 +138,14 @@ func (s *Storage) createTables() error {
     UNIQUE(peer_system_id, direction, period_start)
 	);
 
+	CREATE TABLE IF NOT EXISTS peer_connections (
+		system_id TEXT NOT NULL,
+		peer_id TEXT NOT NULL,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (system_id, peer_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_peer_connections_updated ON peer_connections(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_summaries_peer ON attestation_summaries(peer_system_id);
 	CREATE INDEX IF NOT EXISTS idx_summaries_period ON attestation_summaries(period_start);
 	CREATE INDEX IF NOT EXISTS idx_peers_last_seen ON peers(last_seen_at);
@@ -163,11 +168,11 @@ func (s *Storage) SaveSystem(sys *System) error {
 	var secondaryClass, secondaryDesc, secondaryColor *string
 	var secondaryTemp *int
 	var secondaryLum *float64
-	
+
 	var tertiaryClass, tertiaryDesc, tertiaryColor *string
 	var tertiaryTemp *int
 	var tertiaryLum *float64
-	
+
 	if sys.Stars.Secondary != nil {
 		secondaryClass = &sys.Stars.Secondary.Class
 		secondaryDesc = &sys.Stars.Secondary.Description
@@ -175,7 +180,7 @@ func (s *Storage) SaveSystem(sys *System) error {
 		secondaryTemp = &sys.Stars.Secondary.Temperature
 		secondaryLum = &sys.Stars.Secondary.Luminosity
 	}
-	
+
 	if sys.Stars.Tertiary != nil {
 		tertiaryClass = &sys.Stars.Tertiary.Class
 		tertiaryDesc = &sys.Stars.Tertiary.Description
@@ -183,7 +188,7 @@ func (s *Storage) SaveSystem(sys *System) error {
 		tertiaryTemp = &sys.Stars.Tertiary.Temperature
 		tertiaryLum = &sys.Stars.Tertiary.Luminosity
 	}
-	
+
 	isBinary := 0
 	if sys.Stars.IsBinary {
 		isBinary = 1
@@ -192,7 +197,7 @@ func (s *Storage) SaveSystem(sys *System) error {
 	if sys.Stars.IsTrinary {
 		isTrinary = 1
 	}
-	
+
 	// Encode keys as base64
 	publicKey := ""
 	privateKey := ""
@@ -200,7 +205,7 @@ func (s *Storage) SaveSystem(sys *System) error {
 		publicKey = base64.StdEncoding.EncodeToString(sys.Keys.PublicKey)
 		privateKey = base64.StdEncoding.EncodeToString(sys.Keys.PrivateKey)
 	}
-	
+
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO system (
 			id, name, x, y, z,
@@ -227,12 +232,12 @@ func (s *Storage) LoadSystem() (*System, error) {
 	var idStr string
 	var createdAt, lastSeenAt int64
 	var isBinary, isTrinary, starCount int
-	
+
 	// Nullable fields for secondary/tertiary stars
 	var secondaryClass, secondaryDesc, secondaryColor sql.NullString
 	var secondaryTemp sql.NullInt64
 	var secondaryLum sql.NullFloat64
-	
+
 	var tertiaryClass, tertiaryDesc, tertiaryColor sql.NullString
 	var tertiaryTemp sql.NullInt64
 	var tertiaryLum sql.NullFloat64
@@ -261,11 +266,11 @@ func (s *Storage) LoadSystem() (*System, error) {
 	sys.ID = uuid.MustParse(idStr)
 	sys.CreatedAt = time.Unix(createdAt, 0)
 	sys.LastSeenAt = time.Unix(lastSeenAt, 0)
-	
+
 	sys.Stars.IsBinary = isBinary == 1
 	sys.Stars.IsTrinary = isTrinary == 1
 	sys.Stars.Count = starCount
-	
+
 	// Load secondary star if present
 	if secondaryClass.Valid {
 		sys.Stars.Secondary = &StarType{
@@ -276,7 +281,7 @@ func (s *Storage) LoadSystem() (*System, error) {
 			Luminosity:  secondaryLum.Float64,
 		}
 	}
-	
+
 	// Load tertiary star if present
 	if tertiaryClass.Valid {
 		sys.Stars.Tertiary = &StarType{
@@ -287,9 +292,9 @@ func (s *Storage) LoadSystem() (*System, error) {
 			Luminosity:  tertiaryLum.Float64,
 		}
 	}
-	
+
 	// Load cryptographic keys from database
-	if publicKeyB64.Valid && privateKeyB64.Valid && 
+	if publicKeyB64.Valid && privateKeyB64.Valid &&
 	   publicKeyB64.String != "" && privateKeyB64.String != "" {
 		// Decode stored keys
 		publicKey, err := base64.StdEncoding.DecodeString(publicKeyB64.String)
@@ -300,7 +305,7 @@ func (s *Storage) LoadSystem() (*System, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode private key: %w", err)
 		}
-		
+
 		sys.Keys = &KeyPair{
 			PublicKey:  publicKey,
 			PrivateKey: privateKey,
@@ -378,7 +383,7 @@ func (s *Storage) Close() error {
 // GetStats returns basic statistics about the stored data
 func (s *Storage) GetStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
-	
+
 	var peerCount int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM peers`).Scan(&peerCount); err != nil {
 		return nil, err
@@ -394,7 +399,7 @@ func (s *Storage) SaveAttestation(attestation *Attestation) error {
 	if attestation.Verify() {
 		verified = 1
 	}
-	
+
 	_, err := s.db.Exec(`
 		INSERT INTO attestations (
 			from_system_id, to_system_id, timestamp, message_type,
@@ -403,7 +408,7 @@ func (s *Storage) SaveAttestation(attestation *Attestation) error {
 	`, attestation.FromSystemID.String(), attestation.ToSystemID.String(),
 		attestation.Timestamp, attestation.MessageType,
 		attestation.Signature, attestation.PublicKey, verified, time.Now().Unix())
-	
+
 	return err
 }
 
@@ -415,27 +420,27 @@ func (s *Storage) GetAttestations(systemID uuid.UUID) ([]*Attestation, error) {
 		WHERE from_system_id = ? OR to_system_id = ?
 		ORDER BY timestamp ASC
 	`, systemID.String(), systemID.String())
-	
+
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var attestations []*Attestation
 	for rows.Next() {
 		var att Attestation
 		var fromID, toID string
-		
+
 		err := rows.Scan(&fromID, &toID, &att.Timestamp, &att.MessageType, &att.Signature, &att.PublicKey)
 		if err != nil {
 			continue
 		}
-		
+
 		att.FromSystemID = uuid.MustParse(fromID)
 		att.ToSystemID = uuid.MustParse(toID)
 		attestations = append(attestations, &att)
 	}
-	
+
 	return attestations, nil
 }
 
@@ -447,7 +452,7 @@ func (s *Storage) GetAttestationCount(systemID uuid.UUID) (int, error) {
 		WHERE (from_system_id = ? OR to_system_id = ?)
 		AND verified = 1
 	`, systemID.String(), systemID.String()).Scan(&count)
-	
+
 	return count, err
 }
 
@@ -831,6 +836,90 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     }
 
     return systems, nil
+}
+
+// SavePeerConnections stores a system's peer list (learned from peer exchange)
+func (s *Storage) SavePeerConnections(systemID uuid.UUID, peerIDs []uuid.UUID) error {
+	now := time.Now().Unix()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT OR REPLACE INTO peer_connections (system_id, peer_id, updated_at)
+		VALUES (?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, peerID := range peerIDs {
+		_, err = stmt.Exec(systemID.String(), peerID.String(), now)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// GetAllConnections returns all known connections for map visualization
+func (s *Storage) GetAllConnections(maxAge time.Duration) ([]TopologyEdge, error) {
+	cutoff := time.Now().Add(-maxAge).Unix()
+
+	rows, err := s.db.Query(`
+		SELECT DISTINCT system_id, peer_id
+		FROM peer_connections
+		WHERE updated_at > ?
+	`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	edgeMap := make(map[string]TopologyEdge)
+
+	for rows.Next() {
+		var fromID, toID string
+		if err := rows.Scan(&fromID, &toID); err != nil {
+			continue
+		}
+
+		// Deduplicate A→B and B→A
+		var key string
+		if fromID < toID {
+			key = fromID + ":" + toID
+		} else {
+			key = toID + ":" + fromID
+		}
+
+		if _, exists := edgeMap[key]; !exists {
+			edgeMap[key] = TopologyEdge{
+				FromID:   fromID,
+				FromName: s.getSystemName(fromID),
+				ToID:     toID,
+				ToName:   s.getSystemName(toID),
+			}
+		}
+	}
+
+	edges := make([]TopologyEdge, 0, len(edgeMap))
+	for _, edge := range edgeMap {
+		edges = append(edges, edge)
+	}
+
+	return edges, nil
+}
+
+// PrunePeerConnections removes stale connection data
+func (s *Storage) PrunePeerConnections(maxAge time.Duration) error {
+	cutoff := time.Now().Add(-maxAge).Unix()
+	_, err := s.db.Exec(`DELETE FROM peer_connections WHERE updated_at < ?`, cutoff)
+	return err
 }
 
 // TopologyEdge represents a connection between two systems
