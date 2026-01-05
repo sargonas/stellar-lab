@@ -88,28 +88,39 @@ func (g *StellarTransport) Start() {
 }
 
 // gossipLoop periodically sends heartbeats to random peers
+// Note: We cap at 3 peers per tick to normalize attestation rate
+// regardless of total peer count (prevents hub nodes from earning faster)
 func (g *StellarTransport) gossipLoop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
 
-	for range ticker.C {
-		g.mu.RLock()
-		peers := make([]*Peer, 0, len(g.peers))
-		for _, peer := range g.peers {
-			peers = append(peers, peer)
-		}
-		g.mu.RUnlock()
+    for range ticker.C {
+        g.mu.RLock()
+        peers := make([]*Peer, 0, len(g.peers))
+        for _, peer := range g.peers {
+            peers = append(peers, peer)
+        }
+        g.mu.RUnlock()
 
-		if len(peers) == 0 {
-			continue
-		}
+        if len(peers) == 0 {
+            continue
+        }
 
-		// Select random peer
-		peer := peers[rand.Intn(len(peers))]
-		if err := g.sendHeartbeat(peer); err != nil {
-			log.Printf("Failed to send heartbeat to %s: %v", peer.Address, err)
-		}
-	}
+        // Cap at 3 heartbeats per tick - normalizes attestation rate
+        // A node with 15 peers earns same as node with 5 peers
+        numToContact := min(3, len(peers))
+
+        // Shuffle and pick random subset
+        rand.Shuffle(len(peers), func(i, j int) {
+            peers[i], peers[j] = peers[j], peers[i]
+        })
+
+        for i := 0; i < numToContact; i++ {
+            if err := g.sendHeartbeat(peers[i]); err != nil {
+                log.Printf("Failed to send heartbeat to %s: %v", peers[i].Address, err)
+            }
+        }
+    }
 }
 
 // peerExchangeLoop periodically exchanges peer lists with neighbors
@@ -323,23 +334,24 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 			msg.Attestation.FromSystemID, msg.System.Name, msg.Attestation.MessageType)
 	}
 
-	// Check if this is a new peer and we're at capacity
-	if msg.System != nil {
-		g.mu.RLock()
-		_, existingPeer := g.peers[msg.System.ID]
-		peerCount := len(g.peers)
-		g.mu.RUnlock()
-
-		if !existingPeer && peerCount >= MaxPeers {
-			log.Printf("Rejecting new peer %s (%s) - at max capacity (%d/%d)",
-				msg.System.ID, msg.System.Name, peerCount, MaxPeers)
-			return fmt.Errorf("peer at max capacity")
-		}
-	}
-
 	// Cache peer's system info for map visualization
 	if msg.System != nil {
 		g.storage.SavePeerSystem(msg.System)
+	}
+
+	// Check if this is a new peer and we're at capacity
+	if msg.System != nil {
+	    g.mu.RLock()
+	    _, existingPeer := g.peers[msg.System.ID]
+	    peerCount := len(g.peers)
+	    g.mu.RUnlock()
+
+	    maxPeers := g.localSystem.GetMaxPeers()
+	    if !existingPeer && peerCount >= maxPeers {
+	        log.Printf("Rejecting new peer %s (%s) - at max capacity (%d/%d)",
+	            msg.System.ID, msg.System.Name, peerCount, maxPeers)
+	        return fmt.Errorf("peer at max capacity")
+	    }
 	}
 	
 	// Update peer last seen time
@@ -369,7 +381,7 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 			peerCount := len(g.peers)
 			g.mu.RUnlock()
 
-			if !exists && peerCount < MaxPeers {
+			if !exists && peerCount < g.localSystem.GetMaxPeers() {
 				// Reach out to this new peer to establish bidirectional connection
 				log.Printf("Discovered new peer %s via exchange, attempting connection to %s",
 					peer.SystemID.String()[:8], peer.Address)
@@ -390,7 +402,7 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 
 					// Connection succeeded, add to our peer list
 					g.mu.Lock()
-					if _, exists := g.peers[p.SystemID]; !exists && len(g.peers) < MaxPeers {
+					if _, exists := g.peers[p.SystemID]; !exists && len(g.peers) < g.localSystem.GetMaxPeers() {
 						g.peers[p.SystemID] = p
 						g.storage.SavePeer(p)
 						log.Printf("Successfully connected to discovered peer %s",
@@ -484,7 +496,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 				currentCount := len(g.peers)
 				g.mu.RUnlock()
 
-				if exists || currentCount >= MaxPeers {
+				if exists || currentCount >= g.localSystem.GetMaxPeers() {
 					continue
 				}
 
@@ -508,7 +520,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 
 				// Success - add peer
 				g.mu.Lock()
-				if _, exists := g.peers[sys.ID]; !exists && len(g.peers) < MaxPeers {
+				if _, exists := g.peers[sys.ID]; !exists && len(g.peers) < g.localSystem.GetMaxPeers() {
 					g.peers[sys.ID] = tempPeer
 					g.storage.SavePeer(tempPeer)
 					log.Printf("  Successfully connected to %s", sys.Name)
@@ -556,7 +568,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 						currentCount := len(g.peers)
 						g.mu.RUnlock()
 
-						if exists || currentCount >= MaxPeers {
+						if exists || currentCount >= g.localSystem.GetMaxPeers() {
 							continue
 						}
 
@@ -573,7 +585,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 						}
 
 						g.mu.Lock()
-						if _, exists := g.peers[tempPeer.SystemID]; !exists && len(g.peers) < MaxPeers {
+						if _, exists := g.peers[tempPeer.SystemID]; !exists && len(g.peers) < g.localSystem.GetMaxPeers() {
 							g.peers[tempPeer.SystemID] = tempPeer
 							g.storage.SavePeer(tempPeer)
 							log.Printf("  Successfully connected to %s", sys.Name)
@@ -628,7 +640,7 @@ func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Re
 
     // Add self (only if we have capacity)
     selfDist := math.Sqrt(g.localSystem.X*g.localSystem.X + g.localSystem.Y*g.localSystem.Y + g.localSystem.Z*g.localSystem.Z)
-    selfHasCapacity := selfPeerCount < MaxPeers
+    selfHasCapacity := selfPeerCount < g.localSystem.GetMaxPeers()
 
     systems = append(systems, DiscoverySystem{
         ID:                 g.localSystem.ID.String(),
@@ -639,7 +651,7 @@ func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Re
         PeerAddress:        g.localSystem.PeerAddress,
         DistanceFromOrigin: selfDist,
         CurrentPeers:       selfPeerCount,
-        MaxPeers:           MaxPeers,
+        MaxPeers:           g.localSystem.GetMaxPeers(),
         HasCapacity:        selfHasCapacity,
     })
 
@@ -662,7 +674,7 @@ func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Re
             PeerAddress:        peer.Address,
             DistanceFromOrigin: dist,
             CurrentPeers:       -1,   // Unknown
-            MaxPeers:           MaxPeers,
+            MaxPeers:           peerSys.GetMaxPeers(),
             HasCapacity:        true, // Assume yes, will be rejected if not
         })
     }

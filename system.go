@@ -289,5 +289,39 @@ type DiscoverySystem struct {
     HasCapacity        bool    `json:"has_capacity"`
 }
 
-// MaxPeers is the maximum number of peers a node will accept
-const MaxPeers = 5
+// GetMaxPeers returns the maximum peer connections based on star configuration
+// Larger/rarer star systems can maintain more connections, acting as network hubs
+// Note: This affects topology only, not attestation rate (which is capped)
+func (s *System) GetMaxPeers() int {
+    if s.Stars.Primary.Class == "" {
+        return 5 // Default fallback
+    }
+
+    // Base peers by primary star class
+    basePeers := 5
+    switch s.Stars.Primary.Class {
+    case "O":
+        basePeers = 12
+    case "B":
+        basePeers = 10
+    case "A":
+        basePeers = 9
+    case "F":
+        basePeers = 8
+    case "G":
+        basePeers = 7
+    case "K":
+        basePeers = 6
+    case "M":
+        basePeers = 5
+    }
+
+    // Bonus for multi-star systems
+    if s.Stars.IsTrinary {
+        basePeers += 5
+    } else if s.Stars.IsBinary {
+        basePeers += 3
+    }
+
+    return basePeers
+}
