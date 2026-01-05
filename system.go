@@ -58,44 +58,46 @@ func generateSingleStar(seed uint64) StarType {
 	var temp int
 	var lum float64
 
+	// Distribution adjusted for small network variety (few thousand nodes)
+	// More rare stars visible while keeping red dwarfs most common
 	switch {
-	case roll < 3: // 0.003% - O type
+	case roll < 500: // 0.5% - O type
 		class = "O"
 		desc = "Blue Supergiant"
 		color = "#9bb0ff"
 		temp = 30000 + int(seed%20000)
 		lum = 30000.0 + float64(seed%20000)
-	case roll < 133: // 0.13% - B type
+	case roll < 2500: // 2% - B type
 		class = "B"
 		desc = "Blue Giant"
 		color = "#aabfff"
 		temp = 10000 + int(seed%10000)
 		lum = 25.0 + float64(seed%1000)
-	case roll < 733: // 0.6% - A type
+	case roll < 7500: // 5% - A type
 		class = "A"
 		desc = "White Star"
 		color = "#cad7ff"
 		temp = 7500 + int(seed%2500)
 		lum = 5.0 + float64(seed%20)
-	case roll < 3733: // 3% - F type
+	case roll < 17500: // 10% - F type
 		class = "F"
 		desc = "Yellow-White Star"
 		color = "#f8f7ff"
 		temp = 6000 + int(seed%1500)
 		lum = 1.5 + float64(seed%10)/10.0
-	case roll < 11733: // 8% - G type (like our Sun)
+	case roll < 35000: // 17.5% - G type (like our Sun)
 		class = "G"
 		desc = "Yellow Dwarf"
 		color = "#fff4ea"
 		temp = 5200 + int(seed%800)
 		lum = 0.6 + float64(seed%10)/10.0
-	case roll < 23733: // 12% - K type
+	case roll < 60000: // 25% - K type
 		class = "K"
 		desc = "Orange Dwarf"
 		color = "#ffd2a1"
 		temp = 3700 + int(seed%1500)
 		lum = 0.08 + float64(seed%50)/100.0
-	default: // 76.267% - M type (most common)
+	default: // 40% - M type
 		class = "M"
 		desc = "Red Dwarf"
 		color = "#ffcc6f"
