@@ -26,4 +26,5 @@
 # No seed nodes yet - be the first to volunteer!
 # See SEED-NODES.md for how to run a seed node
 
-stellar-lab.sargonas.com
+stellar-lab.sargonas.com:7867
+localhost:7867
