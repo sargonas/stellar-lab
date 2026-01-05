@@ -794,3 +794,38 @@ func (s *Storage) CountKnownSystems() int {
     }
     return count
 }
+
+// GetAllPeerSystems returns all cached peer system info (not just direct peers)
+func (s *Storage) GetAllPeerSystems() ([]*System, error) {
+    rows, err := s.db.Query(`
+        SELECT id, name, x, y, z, star_data, created_at, last_seen_at, address, peer_address
+        FROM peer_systems
+    `)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    var systems []*System
+    for rows.Next() {
+        var sys System
+        var idStr string
+        var starData []byte
+        var peerAddress sql.NullString
+
+        err := rows.Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z, &starData,
+            &sys.CreatedAt, &sys.LastSeenAt, &sys.Address, &peerAddress)
+        if err != nil {
+            continue
+        }
+
+        sys.ID = uuid.MustParse(idStr)
+        if peerAddress.Valid {
+            sys.PeerAddress = peerAddress.String
+        }
+        json.Unmarshal(starData, &sys.Stars)
+        systems = append(systems, &sys)
+    }
+
+    return systems, nil
+}

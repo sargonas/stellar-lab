@@ -362,7 +362,7 @@ func (api *API) getMapData(w http.ResponseWriter, r *http.Request) {
 	type MapData struct {
 		Systems     []MapSystem     `json:"systems"`
 		Connections []MapConnection `json:"connections"`
-		Center      MapSystem       `json:"center"` // Local system for centering view
+		Center      MapSystem       `json:"center"`
 	}
 
 	systems := []MapSystem{}
@@ -381,37 +381,42 @@ func (api *API) getMapData(w http.ResponseWriter, r *http.Request) {
 	}
 	systems = append(systems, localSys)
 
-	// Add all known peers
-	peers := api.transport.GetPeers()
-	for _, peer := range peers {
-		// Try to get cached system info for this peer
-		peerSys, err := api.storage.GetPeerSystem(peer.SystemID)
-		if err != nil || peerSys == nil {
-			// No cached info, use basic data
-			systems = append(systems, MapSystem{
-				ID:        peer.SystemID.String(),
-				Name:      peer.SystemID.String()[:8] + "...",
-				X:         0, // Unknown
-				Y:         0,
-				Z:         0,
-				StarColor: "#FFFFFF",
-				StarClass: "?",
-				IsLocal:   false,
-			})
-		} else {
+	// Track which systems we've added (to avoid duplicates)
+	addedSystems := make(map[string]bool)
+	addedSystems[api.system.ID.String()] = true
+
+	// Add all known peer systems from cache
+	allPeerSystems, err := api.storage.GetAllPeerSystems()
+	if err == nil {
+		for _, peerSys := range allPeerSystems {
+			if addedSystems[peerSys.ID.String()] {
+				continue
+			}
+
+			starColor := "#FFFFFF"
+			starClass := "?"
+			if peerSys.Stars.Primary.Color != "" {
+				starColor = peerSys.Stars.Primary.Color
+				starClass = peerSys.Stars.Primary.Class
+			}
+
 			systems = append(systems, MapSystem{
 				ID:        peerSys.ID.String(),
 				Name:      peerSys.Name,
 				X:         peerSys.X,
 				Y:         peerSys.Y,
 				Z:         peerSys.Z,
-				StarColor: peerSys.Stars.Primary.Color,
-				StarClass: peerSys.Stars.Primary.Class,
+				StarColor: starColor,
+				StarClass: starClass,
 				IsLocal:   false,
 			})
+			addedSystems[peerSys.ID.String()] = true
 		}
+	}
 
-		// Add connection from local to peer
+	// Add connections for direct peers only (we only know our own connections)
+	peers := api.transport.GetPeers()
+	for _, peer := range peers {
 		connections = append(connections, MapConnection{
 			From: api.system.ID.String(),
 			To:   peer.SystemID.String(),
