@@ -283,12 +283,19 @@ func (g *StellarTransport) sendMessage(address string, msg TransportMessage) err
 
 	// Check if we were rejected
 	if resp.StatusCode != http.StatusOK {
-		// Try to read the reason from response body
+		// Try to read the reason and system info from response body
 		var errResp struct {
-			Error string `json:"error"`
+			Error  string  `json:"error"`
+			System *System `json:"system"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error != "" {
-			return fmt.Errorf("rejected: %s", errResp.Error)
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil {
+			// Save the rejecting system's info so we know about them even if rejected
+			if errResp.System != nil {
+				g.storage.SavePeerSystem(errResp.System)
+			}
+			if errResp.Error != "" {
+				return fmt.Errorf("rejected: %s", errResp.Error)
+			}
 		}
 		return fmt.Errorf("rejected with status %d", resp.StatusCode)
 	}
@@ -336,6 +343,12 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 			msg.Attestation.FromSystemID, msg.System.Name, msg.Attestation.MessageType)
 	}
 
+	// Cache peer's system info for map visualization
+	// Do this BEFORE capacity check so we learn about all systems even if we can't connect
+	if msg.System != nil {
+		g.storage.SavePeerSystem(msg.System)
+	}
+
 	// Check if this is a new peer and we're at capacity
 	if msg.System != nil {
 		g.mu.RLock()
@@ -349,11 +362,6 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 				msg.System.ID, msg.System.Name, peerCount, maxPeers)
 			return fmt.Errorf("at max capacity (%d/%d)", peerCount, maxPeers)
 		}
-	}
-
-	// Cache peer's system info for map visualization
-	if msg.System != nil {
-		g.storage.SavePeerSystem(msg.System)
 	}
 
 	// Update peer last seen time
@@ -447,7 +455,12 @@ func (g *StellarTransport) HandleIncomingMessage(w http.ResponseWriter, r *http.
 	if err := g.HandleMessage(msg); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		// Include our system info in rejection so the sender can learn about us
+		// This enables knowledge propagation even when connections are rejected
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":  err.Error(),
+			"system": g.localSystem,
+		})
 		return
 	}
 
