@@ -79,6 +79,10 @@ const webInterfaceHTML = `<!DOCTYPE html>
         .star { padding: 5px; margin: 3px 0; border-left: 3px solid; }
         .refresh-link { color: #0ff; text-decoration: none; float: right; }
         .refresh-link:hover { text-decoration: underline; }
+        .health { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 0.9em; }
+        .health-healthy { background: #003300; color: #0f0; border: 1px solid #0f0; }
+        .health-warning { background: #333300; color: #ff0; border: 1px solid #ff0; }
+        .health-critical { background: #330000; color: #f00; border: 1px solid #f00; }
     </style>
 </head>
 <body>
@@ -88,7 +92,7 @@ const webInterfaceHTML = `<!DOCTYPE html>
     </div>
     <div class="container">
         <h1>⭐ {{.SystemName}} <a href="/" class="refresh-link">↻ Refresh</a></h1>
-        
+
         <div class="box">
             <h2>System Information</h2>
             <div class="stat-row">
@@ -107,6 +111,10 @@ const webInterfaceHTML = `<!DOCTYPE html>
                 <span class="stat-label">Created:</span>
                 <span class="stat-value">{{.Created}}</span>
             </div>
+            <div class="stat-row">
+                <span class="stat-label">Status:</span>
+                <span class="stat-value"><span class="health health-{{.NodeHealthClass}}">{{.NodeHealth}}</span></span>
+            </div>
         </div>
 
         <div class="box">
@@ -117,6 +125,10 @@ const webInterfaceHTML = `<!DOCTYPE html>
                     <strong>{{.Label}}:</strong> {{.Class}} - {{.Description}} ({{.Temperature}}K, {{printf "%.2f" .Luminosity}}L☉)
                 </div>
                 {{end}}
+            </div>
+            <div class="stat-row" style="margin-top: 10px;">
+                <span class="stat-label">Peer Capacity:</span>
+                <span class="stat-value">{{.PeerCount}}/{{.MaxPeers}} ({{.PeerCapacityDesc}})</span>
             </div>
         </div>
 
@@ -169,6 +181,18 @@ const webInterfaceHTML = `<!DOCTYPE html>
                 <span class="stat-label">Direct Connections:</span>
                 <span class="stat-value">{{.PeerCount}}</span>
             </div>
+            <div class="stat-row">
+                <span class="stat-label">Protocol Version:</span>
+                <span class="stat-value">v{{.ProtocolVersion}}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Stored Attestations:</span>
+                <span class="stat-value">{{.AttestationCount}}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Database Size:</span>
+                <span class="stat-value">{{.DatabaseSize}}</span>
+            </div>
         </div>
 
         <div class="box">
@@ -207,8 +231,15 @@ type WebInterfaceData struct {
 	LastAttestation    string
 	PublicKey          string
 	PeerCount          int
+	MaxPeers           int
+	PeerCapacityDesc   string
 	Peers              []PeerDisplay
 	TotalSystems       int
+	ProtocolVersion    string
+	AttestationCount   int
+	DatabaseSize       string
+	NodeHealth         string
+	NodeHealthClass    string
 }
 
 type StarDisplay struct {
@@ -233,7 +264,7 @@ type PeerDisplay struct {
 func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 	// Gather all data
 	peers := api.transport.GetPeers()
-	
+
 	// Build peer displays with system info fetches
 	peerDisplays := make([]PeerDisplay, 0)
 	for _, peer := range peers {
@@ -254,26 +285,26 @@ func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 			LastSeen: formatDuration(time.Since(peer.LastSeenAt)),
 		})
 	}
-	
+
 	// Get reputation from attestations
 	attestations, _ := api.storage.GetAttestations(api.system.ID)
 	proof := BuildAttestationProof(api.system.ID, attestations)
 	reputationScore := CalculateVerifiableReputation(proof)
 	rank := GetVerifiableRank(reputationScore)
-	
+
 	// Calculate time since last attestation
 	lastAttestationAgo := "Never"
 	if len(attestations) > 0 {
 		lastTime := time.Unix(attestations[len(attestations)-1].Timestamp, 0)
 		lastAttestationAgo = formatDuration(time.Since(lastTime)) + " ago"
 	}
-	
+
 	// Get public key
 	publicKey := ""
 	if api.system.Keys != nil {
 		publicKey = base64.StdEncoding.EncodeToString(api.system.Keys.PublicKey)[:16] + "..."
 	}
-	
+
 	repSummary := map[string]interface{}{
 		"rank":                  rank,
 		"reputation_points":     int(reputationScore),
@@ -287,7 +318,7 @@ func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 		"last_attestation_ago":  lastAttestationAgo,
 		"public_key":            publicKey,
 	}
-	
+
 	// Build star displays
 	starDisplays := make([]StarDisplay, 0)
 	starDisplays = append(starDisplays, StarDisplay{
@@ -318,7 +349,7 @@ func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 			Luminosity:  api.system.Stars.Tertiary.Luminosity,
 		})
 	}
-	
+
 	rankClass := "unranked"
 	rank = repSummary["rank"].(string)
 	switch rank {
@@ -333,7 +364,47 @@ func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 	case "Bronze":
 		rankClass = "bronze"
 	}
-	
+
+	// Build peer capacity description
+	maxPeers := api.system.GetMaxPeers()
+	capacityDesc := api.system.Stars.Primary.Class + "-class"
+	if api.system.Stars.IsTrinary {
+		capacityDesc += " trinary"
+	} else if api.system.Stars.IsBinary {
+		capacityDesc += " binary"
+	}
+
+	// Get database stats
+	dbStats, _ := api.storage.GetDatabaseStats()
+	attestationCount := 0
+	databaseSize := "Unknown"
+	if dbStats != nil {
+		if count, ok := dbStats["attestation_count"].(int); ok {
+			attestationCount = count
+		}
+		if size, ok := dbStats["database_size_bytes"].(int64); ok {
+			if size < 1024 {
+				databaseSize = fmt.Sprintf("%d B", size)
+			} else if size < 1024*1024 {
+				databaseSize = fmt.Sprintf("%.1f KB", float64(size)/1024)
+			} else {
+				databaseSize = fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+			}
+		}
+	}
+
+	// Determine node health
+	nodeHealth := "Healthy"
+	nodeHealthClass := "healthy"
+	if len(peers) < 2 {
+		nodeHealth = "Low Connectivity"
+		nodeHealthClass = "warning"
+	}
+	if len(peers) == 0 {
+		nodeHealth = "Disconnected"
+		nodeHealthClass = "critical"
+	}
+
 	data := WebInterfaceData{
 		SystemName:         api.system.Name,
 		SystemID:           api.system.ID.String(),
@@ -354,8 +425,15 @@ func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 		LastAttestation:    repSummary["last_attestation_ago"].(string),
 		PublicKey:          repSummary["public_key"].(string),
 		PeerCount:          len(peers),
+		MaxPeers:           maxPeers,
+		PeerCapacityDesc:   capacityDesc,
 		Peers:              peerDisplays,
-		TotalSystems:       api.storage.CountKnownSystems() + 1, // All known systems + self
+		TotalSystems:       api.storage.CountKnownSystems() + 1,
+		ProtocolVersion:    CurrentProtocolVersion.String(),
+		AttestationCount:   attestationCount,
+		DatabaseSize:       databaseSize,
+		NodeHealth:         nodeHealth,
+		NodeHealthClass:    nodeHealthClass,
 	}
 	
 	tmpl, err := template.New("web").Parse(webInterfaceHTML)
