@@ -405,8 +405,18 @@ const indexTemplate = `<!DOCTYPE html>
 
         function renderGalaxyMap() {
             const map = document.getElementById('galaxy-map');
-            const allSystems = [selfSystem, ...knownSystems];
+            if (!map) return;
 
+            const width = map.clientWidth;
+            const height = map.clientHeight;
+
+            // Don't render if container has no size yet
+            if (width === 0 || height === 0) {
+                setTimeout(renderGalaxyMap, 100);
+                return;
+            }
+
+            const allSystems = [selfSystem, ...knownSystems];
             if (allSystems.length === 0) return;
 
             let minX = Infinity, maxX = -Infinity;
@@ -419,19 +429,34 @@ const indexTemplate = `<!DOCTYPE html>
                 if (s.y > maxY) maxY = s.y;
             });
 
-            const padX = Math.max((maxX - minX) * 0.1, 100);
-            const padY = Math.max((maxY - minY) * 0.1, 100);
+            // Handle single system or systems at same location
+            let rangeX = maxX - minX;
+            let rangeY = maxY - minY;
+
+            if (rangeX < 1) {
+                minX -= 500;
+                maxX += 500;
+                rangeX = 1000;
+            }
+            if (rangeY < 1) {
+                minY -= 500;
+                maxY += 500;
+                rangeY = 1000;
+            }
+
+            // Add padding
+            const padX = rangeX * 0.1;
+            const padY = rangeY * 0.1;
             minX -= padX; maxX += padX;
             minY -= padY; maxY += padY;
-
-            const width = map.clientWidth;
-            const height = map.clientHeight;
+            rangeX = maxX - minX;
+            rangeY = maxY - minY;
 
             map.innerHTML = '';
 
             allSystems.forEach(s => {
-                const x = ((s.x - minX) / (maxX - minX)) * (width - 20) + 10;
-                const y = ((s.y - minY) / (maxY - minY)) * (height - 20) + 10;
+                const x = ((s.x - minX) / rangeX) * (width - 20) + 10;
+                const y = ((s.y - minY) / rangeY) * (height - 20) + 10;
 
                 const dot = document.createElement('div');
                 dot.className = 'map-dot' + (s.id === selfSystem.id ? ' self' : '');
@@ -443,7 +468,12 @@ const indexTemplate = `<!DOCTYPE html>
             });
         }
 
-        renderGalaxyMap();
+        // Wait for DOM and layout to be ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', renderGalaxyMap);
+        } else {
+            setTimeout(renderGalaxyMap, 50);
+        }
         window.addEventListener('resize', renderGalaxyMap);
         setTimeout(() => location.reload(), 30000);
     </script>
