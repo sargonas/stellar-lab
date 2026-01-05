@@ -353,20 +353,22 @@ func main() {
 	if err != nil {
 		// Try to get a nearby system from bootstrap peer if provided
 		var nearbySystem *System
+		var bootstrapSystemID uuid.UUID
 		if *bootstrap != "" {
-			log.Printf("Fetching bootstrap peer info from %s", *bootstrap)
-			resp, err := http.Get("http://" + *bootstrap + "/system")
-			if err == nil {
-				defer resp.Body.Close()
-				var bootstrapSystem System
-				if json.NewDecoder(resp.Body).Decode(&bootstrapSystem) == nil {
-					nearbySystem = &bootstrapSystem
-					log.Printf("Will cluster near bootstrap system: %s at (%.2f, %.2f, %.2f)",
-						nearbySystem.Name, nearbySystem.X, nearbySystem.Y, nearbySystem.Z)
-				}
-			} else {
-				log.Printf("Warning: Could not fetch bootstrap peer info: %v", err)
-			}
+		    log.Printf("Fetching bootstrap peer info from %s", *bootstrap)
+		    resp, err := http.Get("http://" + *bootstrap + "/system")
+		    if err == nil {
+		        defer resp.Body.Close()
+		        var bootstrapSystem System
+		        if json.NewDecoder(resp.Body).Decode(&bootstrapSystem) == nil {
+		            nearbySystem = &bootstrapSystem
+		            bootstrapSystemID = bootstrapSystem.ID
+		            log.Printf("Will cluster near bootstrap system: %s at (%.2f, %.2f, %.2f)",
+		                nearbySystem.Name, nearbySystem.X, nearbySystem.Y, nearbySystem.Z)
+		        }
+		    } else {
+		        log.Printf("Warning: Could not fetch bootstrap peer info: %v", err)
+		    }
 		}
 
 		// Create new system (clustered if we got bootstrap info)
@@ -483,14 +485,14 @@ func main() {
 
 	// Connect to bootstrap peer if provided, otherwise try seed nodes
 	if *bootstrap != "" {
-		log.Printf("Attempting to connect to bootstrap peer: %s", *bootstrap)
-		if err := transport.AddPeer(system.ID, *bootstrap); err != nil {
-			log.Printf("Warning: Failed to add bootstrap peer: %v", err)
-		}
-	} else {
-		// No bootstrap provided, try seed nodes
-		log.Println("No bootstrap peer provided, discovering network via seed nodes...")
-		DiscoverNetworkViaSeedNodes(transport, system.ID)
+	    log.Printf("Attempting to connect to bootstrap peer: %s", *bootstrap)
+	    if bootstrapSystemID != uuid.Nil {
+	        if err := transport.AddPeer(bootstrapSystemID, *bootstrap); err != nil {
+	            log.Printf("Warning: Failed to add bootstrap peer: %v", err)
+	        }
+	    } else {
+	        log.Printf("Warning: Could not add bootstrap peer - unknown system ID")
+	    }
 	}
 
 	// Initialize and start API server
