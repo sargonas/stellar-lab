@@ -86,11 +86,12 @@ func (dht *DHT) Start() error {
 	go dht.serveHTTP(listener)
 
 	// Start maintenance loops
-	dht.wg.Add(4)
+	dht.wg.Add(5)
 	go dht.announceLoop()
 	go dht.refreshLoop()
 	go dht.cacheMaintenanceLoop()
 	go dht.peerLivenessLoop()
+	go dht.creditCalculationLoop()
 
 	log.Printf("DHT started for %s (%s)", dht.localSystem.Name, dht.localSystem.ID)
 	return nil

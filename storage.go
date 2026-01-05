@@ -160,6 +160,34 @@ func (s *Storage) createTables() error {
 	CREATE INDEX IF NOT EXISTS idx_attestations_to ON attestations(to_system_id);
 	CREATE INDEX IF NOT EXISTS idx_attestations_timestamp ON attestations(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attestations_verified ON attestations(verified);
+
+	-- Stellar Credits balance tracking
+	CREATE TABLE IF NOT EXISTS credit_balance (
+		system_id TEXT PRIMARY KEY,
+		balance INTEGER NOT NULL DEFAULT 0,
+		total_earned INTEGER NOT NULL DEFAULT 0,
+		total_sent INTEGER NOT NULL DEFAULT 0,
+		total_received INTEGER NOT NULL DEFAULT 0,
+		last_calculated INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL
+	);
+
+	-- Credit transfer history (for future transfer feature)
+	CREATE TABLE IF NOT EXISTS credit_transfers (
+		id TEXT PRIMARY KEY,
+		from_system_id TEXT NOT NULL,
+		to_system_id TEXT NOT NULL,
+		amount INTEGER NOT NULL,
+		memo TEXT,
+		timestamp INTEGER NOT NULL,
+		signature TEXT NOT NULL,
+		public_key TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_credit_transfers_from ON credit_transfers(from_system_id);
+	CREATE INDEX IF NOT EXISTS idx_credit_transfers_to ON credit_transfers(to_system_id);
+	CREATE INDEX IF NOT EXISTS idx_credit_transfers_timestamp ON credit_transfers(timestamp);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -998,4 +1026,148 @@ func (s *Storage) getSystemName(systemID string) string {
 		return systemID
 	}
 	return name
+}
+
+// =============================================================================
+// STELLAR CREDITS STORAGE
+// =============================================================================
+
+// GetCreditBalance retrieves the credit balance for a system
+func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
+	var balance CreditBalance
+	err := s.db.QueryRow(`
+		SELECT system_id, balance, total_earned, total_sent, total_received, last_calculated, updated_at
+		FROM credit_balance WHERE system_id = ?
+	`, systemID.String()).Scan(
+		&balance.SystemID,
+		&balance.Balance,
+		&balance.TotalEarned,
+		&balance.TotalSent,
+		&balance.TotalReceived,
+		&balance.LastUpdated,
+		&balance.LastUpdated,
+	)
+	if err == sql.ErrNoRows {
+		// Return zero balance for new systems
+		return &CreditBalance{
+			SystemID:    systemID,
+			Balance:     0,
+			TotalEarned: 0,
+			LastUpdated: 0,
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &balance, nil
+}
+
+// SaveCreditBalance persists a credit balance
+func (s *Storage) SaveCreditBalance(balance *CreditBalance) error {
+	_, err := s.db.Exec(`
+		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(system_id) DO UPDATE SET
+			balance = excluded.balance,
+			total_earned = excluded.total_earned,
+			total_sent = excluded.total_sent,
+			total_received = excluded.total_received,
+			last_calculated = excluded.last_calculated,
+			updated_at = excluded.updated_at
+	`, balance.SystemID.String(), balance.Balance, balance.TotalEarned,
+		balance.TotalSent, balance.TotalReceived, balance.LastUpdated, time.Now().Unix())
+	return err
+}
+
+// AddCredits adds earned credits to a system's balance
+func (s *Storage) AddCredits(systemID uuid.UUID, amount int64) error {
+	_, err := s.db.Exec(`
+		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, updated_at)
+		VALUES (?, ?, ?, 0, 0, ?, ?)
+		ON CONFLICT(system_id) DO UPDATE SET
+			balance = balance + ?,
+			total_earned = total_earned + ?,
+			last_calculated = ?,
+			updated_at = ?
+	`, systemID.String(), amount, amount, time.Now().Unix(), time.Now().Unix(),
+		amount, amount, time.Now().Unix(), time.Now().Unix())
+	return err
+}
+
+// GetAttestationsSince retrieves attestations since a given timestamp
+func (s *Storage) GetAttestationsSince(systemID uuid.UUID, since int64) ([]*Attestation, error) {
+	rows, err := s.db.Query(`
+		SELECT from_system_id, to_system_id, timestamp, message_type, signature, public_key
+		FROM attestations
+		WHERE (from_system_id = ? OR to_system_id = ?) AND timestamp > ?
+		ORDER BY timestamp ASC
+	`, systemID.String(), systemID.String(), since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attestations []*Attestation
+	for rows.Next() {
+		var fromID, toID, msgType, sig, pubKey string
+		var timestamp int64
+		if err := rows.Scan(&fromID, &toID, &timestamp, &msgType, &sig, &pubKey); err != nil {
+			continue
+		}
+
+		fromUUID, _ := uuid.Parse(fromID)
+		toUUID, _ := uuid.Parse(toID)
+		pubKeyBytes, _ := base64.StdEncoding.DecodeString(pubKey)
+
+		attestations = append(attestations, &Attestation{
+			FromSystemID: fromUUID,
+			ToSystemID:   toUUID,
+			Timestamp:    timestamp,
+			MessageType:  msgType,
+			Signature:    sig,
+			PublicKey:    pubKeyBytes,
+		})
+	}
+
+	return attestations, nil
+}
+
+// SaveCreditTransfer persists a credit transfer (for future use)
+func (s *Storage) SaveCreditTransfer(transfer *CreditTransfer) error {
+	_, err := s.db.Exec(`
+		INSERT INTO credit_transfers (id, from_system_id, to_system_id, amount, memo, timestamp, signature, public_key, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, transfer.ID.String(), transfer.FromSystemID.String(), transfer.ToSystemID.String(),
+		transfer.Amount, transfer.Memo, transfer.Timestamp, transfer.Signature, transfer.PublicKey, time.Now().Unix())
+	return err
+}
+
+// GetCreditTransfers retrieves transfers for a system (sent or received)
+func (s *Storage) GetCreditTransfers(systemID uuid.UUID, limit int) ([]*CreditTransfer, error) {
+	rows, err := s.db.Query(`
+		SELECT id, from_system_id, to_system_id, amount, memo, timestamp, signature, public_key
+		FROM credit_transfers
+		WHERE from_system_id = ? OR to_system_id = ?
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, systemID.String(), systemID.String(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var transfers []*CreditTransfer
+	for rows.Next() {
+		var t CreditTransfer
+		var idStr, fromStr, toStr string
+		if err := rows.Scan(&idStr, &fromStr, &toStr, &t.Amount, &t.Memo, &t.Timestamp, &t.Signature, &t.PublicKey); err != nil {
+			continue
+		}
+		t.ID, _ = uuid.Parse(idStr)
+		t.FromSystemID, _ = uuid.Parse(fromStr)
+		t.ToSystemID, _ = uuid.Parse(toStr)
+		transfers = append(transfers, &t)
+	}
+
+	return transfers, nil
 }

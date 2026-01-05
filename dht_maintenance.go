@@ -233,3 +233,119 @@ func (dht *DHT) GetNetworkStats() map[string]interface{} {
 		"max_peers":        dht.localSystem.GetMaxPeers(),
 	}
 }
+
+// =============================================================================
+// STELLAR CREDITS CALCULATION
+// =============================================================================
+
+// creditCalculationLoop periodically calculates earned credits
+func (dht *DHT) creditCalculationLoop() {
+	defer dht.wg.Done()
+
+	// Calculate every hour
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	// Initial calculation after 5 minutes
+	select {
+	case <-dht.shutdown:
+		return
+	case <-time.After(5 * time.Minute):
+		dht.calculateCredits()
+	}
+
+	for {
+		select {
+		case <-dht.shutdown:
+			return
+		case <-ticker.C:
+			dht.calculateCredits()
+		}
+	}
+}
+
+// calculateCredits computes and stores earned credits based on attestations
+func (dht *DHT) calculateCredits() {
+	// Get current balance
+	balance, err := dht.storage.GetCreditBalance(dht.localSystem.ID)
+	if err != nil {
+		log.Printf("Failed to get credit balance: %v", err)
+		return
+	}
+
+	// Get attestations since last calculation
+	attestations, err := dht.storage.GetAttestationsSince(dht.localSystem.ID, balance.LastUpdated)
+	if err != nil {
+		log.Printf("Failed to get attestations: %v", err)
+		return
+	}
+
+	if len(attestations) == 0 {
+		return
+	}
+
+	// Get current peer count for normalization
+	peerCount := dht.routingTable.GetRoutingTableSize()
+	if peerCount == 0 {
+		peerCount = 1 // Avoid division by zero
+	}
+
+	// Calculate bridge score - how critical are we for network connectivity?
+	bridgeScore := dht.calculateBridgeScore()
+
+	// Calculate earned credits (normalized, with bridge bonus)
+	calculator := NewCreditCalculator()
+	earned := calculator.CalculateEarnedCredits(attestations, peerCount, balance.LastUpdated, bridgeScore)
+
+	if earned > 0 {
+		// Update balance
+		balance.Balance += earned
+		balance.TotalEarned += earned
+		balance.LastUpdated = time.Now().Unix()
+
+		if err := dht.storage.SaveCreditBalance(balance); err != nil {
+			log.Printf("Failed to save credit balance: %v", err)
+			return
+		}
+
+		rank := GetRank(balance.Balance)
+		if bridgeScore > 0.1 {
+			log.Printf("Earned %d stellar credits (bridge bonus: %.0f%%, total: %d, rank: %s)", 
+				earned, bridgeScore*50, balance.Balance, rank.Name)
+		} else {
+			log.Printf("Earned %d stellar credits (total: %d, rank: %s)", earned, balance.Balance, rank.Name)
+		}
+	}
+}
+
+// calculateBridgeScore determines how critical this node is for network connectivity
+func (dht *DHT) calculateBridgeScore() float64 {
+	peers := dht.routingTable.GetAllRoutingTableNodes()
+	if len(peers) == 0 {
+		return 0.0
+	}
+
+	// For each peer, estimate their connectivity
+	// We use their routing table size if we know it, otherwise estimate from star class
+	peerConnectivity := make([]int, 0, len(peers))
+	totalConnectivity := 0
+	
+	for _, peer := range peers {
+		// Estimate peer's connectivity based on their max peers (star class)
+		// In a healthy network, nodes tend to be at ~50-70% capacity
+		estimatedConns := peer.GetMaxPeers() / 2
+		if estimatedConns < 1 {
+			estimatedConns = 1
+		}
+		peerConnectivity = append(peerConnectivity, estimatedConns)
+		totalConnectivity += estimatedConns
+	}
+
+	// Average network connectivity (rough estimate)
+	avgConnectivity := float64(totalConnectivity) / float64(len(peers))
+	if avgConnectivity < 1 {
+		avgConnectivity = 1
+	}
+
+	return CalculateBridgeScore(len(peers), peerConnectivity, avgConnectivity)
+}

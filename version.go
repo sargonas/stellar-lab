@@ -9,7 +9,7 @@ import (
 // Protocol version for DHT-based stellar-mesh
 const (
 	ProtocolMajor = 0
-	ProtocolMinor = 9
+	ProtocolMinor = 10
 	ProtocolPatch = 0
 )
 

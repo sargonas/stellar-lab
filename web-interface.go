@@ -33,6 +33,12 @@ type WebInterfaceData struct {
     RoutingTableSize  int
     CacheSize         int
     ActiveBuckets     int
+    // Stellar Credits
+    CreditBalance     int64
+    CreditRank        string
+    CreditRankColor   string
+    NextRank          string
+    CreditsToNextRank int64
 }
 
 // NewWebInterface creates a new web interface
@@ -143,6 +149,24 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         capacityDesc = "trinary system"
     }
 
+    // Get credit balance
+    var creditBalance int64
+    var creditRank, creditRankColor, nextRank string
+    var creditsToNext int64
+    
+    balance, err := w.storage.GetCreditBalance(sys.ID)
+    if err == nil {
+        creditBalance = balance.Balance
+        rank := GetRank(balance.Balance)
+        creditRank = rank.Name
+        creditRankColor = rank.Color
+        next, needed := GetNextRank(balance.Balance)
+        if needed > 0 {
+            nextRank = next.Name
+            creditsToNext = needed
+        }
+    }
+
     return WebInterfaceData{
         System:           sys,
         Peers:            peers,
@@ -159,6 +183,12 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         RoutingTableSize: rtSize,
         CacheSize:        rt.GetCacheSize(),
         ActiveBuckets:    activeBuckets,
+        // Credits
+        CreditBalance:     creditBalance,
+        CreditRank:        creditRank,
+        CreditRankColor:   creditRankColor,
+        NextRank:          nextRank,
+        CreditsToNextRank: creditsToNext,
     }
 }
 
@@ -383,6 +413,28 @@ const indexTemplate = `<!DOCTYPE html>
                 <div class="stat-row">
                     <span class="stat-label">Database</span>
                     <span class="stat-value">{{.DatabaseSize}}</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Stellar Credits</h2>
+                <div class="stat-row">
+                    <span class="stat-label">Balance</span>
+                    <span class="stat-value">{{.CreditBalance}} ✦</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Rank</span>
+                    <span class="stat-value" style="color: {{.CreditRankColor}};">{{.CreditRank}}</span>
+                </div>
+                {{if .NextRank}}
+                <div class="stat-row">
+                    <span class="stat-label">Next Rank</span>
+                    <span class="stat-value">{{.NextRank}} ({{.CreditsToNextRank}} ✦ needed)</span>
+                </div>
+                {{end}}
+                <div style="margin-top: 15px; padding: 10px; background: rgba(167, 139, 250, 0.1); border-radius: 8px; font-size: 0.85em; color: #888;">
+                    Credits earned: ~1 per hour of verified uptime.<br>
+                    Normalized across all star types.
                 </div>
             </div>
 
