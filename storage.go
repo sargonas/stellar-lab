@@ -1121,7 +1121,6 @@ func (s *Storage) GetAttestationsSince(systemID uuid.UUID, since int64) ([]*Atte
 
 		fromUUID, _ := uuid.Parse(fromID)
 		toUUID, _ := uuid.Parse(toID)
-		pubKeyBytes, _ := base64.StdEncoding.DecodeString(pubKey)
 
 		attestations = append(attestations, &Attestation{
 			FromSystemID: fromUUID,
@@ -1129,7 +1128,7 @@ func (s *Storage) GetAttestationsSince(systemID uuid.UUID, since int64) ([]*Atte
 			Timestamp:    timestamp,
 			MessageType:  msgType,
 			Signature:    sig,
-			PublicKey:    pubKeyBytes,
+			PublicKey:    pubKey,
 		})
 	}
 
