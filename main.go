@@ -499,8 +499,60 @@ func main() {
 
 		if err := transport.SendHeartbeatTo(tempPeer); err != nil {
 			log.Printf("Sponsor peer rejected connection: %v", err)
-			log.Printf("Will discover other peers via gossip...")
-			// Don't add the peer - wait to discover others
+			log.Printf("Querying seed for alternative peers...")
+
+			// Query seed nodes for other potential peers
+			seedNodes := FetchSeedNodes()
+			for _, seedAddr := range seedNodes {
+				resp, err := http.Get("http://" + seedAddr + "/api/discovery")
+				if err != nil {
+					continue
+				}
+
+				var systems []DiscoverySystem
+				if err := json.NewDecoder(resp.Body).Decode(&systems); err != nil {
+					resp.Body.Close()
+					continue
+				}
+				resp.Body.Close()
+
+				// Try each system with capacity
+				for _, sys := range systems {
+					if !sys.HasCapacity || sys.ID == system.ID.String() {
+						continue
+					}
+
+					log.Printf("Trying alternative peer: %s (%s)", sys.Name, sys.PeerAddress)
+					altPeer := &Peer{
+						SystemID:   uuid.MustParse(sys.ID),
+						Address:    sys.PeerAddress,
+						LastSeenAt: time.Now(),
+					}
+
+					if err := transport.SendHeartbeatTo(altPeer); err != nil {
+						log.Printf("  Rejected: %v", err)
+						continue
+					}
+
+					// Success!
+					if err := transport.AddPeer(altPeer.SystemID, altPeer.Address); err == nil {
+						log.Printf("  Successfully connected to %s", sys.Name)
+					}
+
+					// Check if we have enough peers
+					if len(transport.GetPeers()) >= 2 {
+						break
+					}
+				}
+
+				if len(transport.GetPeers()) >= 1 {
+					break
+				}
+			}
+
+			if len(transport.GetPeers()) == 0 {
+				log.Printf("Could not connect to any peers - will retry via background discovery")
+			}
 		} else {
 			// Connection accepted, add the peer
 			if err := transport.AddPeer(nearbySystem.ID, sponsorPeerAddress); err != nil {
