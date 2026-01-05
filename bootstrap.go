@@ -28,6 +28,32 @@ func DefaultBootstrapConfig() BootstrapConfig {
 func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 	log.Printf("Starting DHT bootstrap...")
 
+	// First, try to rejoin using cached peers from previous sessions
+	cachedPeers := dht.routingTable.GetAllRoutingTableNodes()
+	if len(cachedPeers) > 0 {
+		log.Printf("Found %d cached peers from previous session, attempting to rejoin...", len(cachedPeers))
+		connected := 0
+		for _, peer := range cachedPeers {
+			if peer.PeerAddress == "" {
+				continue
+			}
+			log.Printf("  Pinging cached peer: %s (%s)", peer.Name, peer.PeerAddress)
+			if _, err := dht.Ping(peer.PeerAddress); err != nil {
+				log.Printf("    Failed: %v", err)
+				dht.routingTable.RecordFailure(peer.ID)
+				continue
+			}
+			log.Printf("    Connected!")
+			dht.routingTable.MarkVerified(peer.ID)
+			connected++
+		}
+		if connected > 0 {
+			log.Printf("Rejoined network via %d cached peers", connected)
+			return dht.completeBootstrap()
+		}
+		log.Printf("Could not reach any cached peers, falling back to bootstrap...")
+	}
+
 	// If we have a direct bootstrap peer, try that first
 	if config.BootstrapPeer != "" {
 		if err := dht.bootstrapFromPeer(config.BootstrapPeer); err != nil {

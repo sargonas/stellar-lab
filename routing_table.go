@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -502,24 +503,47 @@ func (rt *RoutingTable) loadFromStorage() {
 
 	systems, err := rt.storage.GetAllPeerSystems()
 	if err != nil {
+		log.Printf("Failed to load peer systems from storage: %v", err)
 		return
 	}
 
-	rt.cacheMu.Lock()
-	defer rt.cacheMu.Unlock()
+	log.Printf("Loading %d cached systems from storage", len(systems))
 
 	for _, sys := range systems {
 		if sys.ID == rt.localID {
 			continue
 		}
+		
+		// Add to cache directly (avoiding CacheSystem to prevent redundant DB write)
+		rt.cacheMu.Lock()
 		rt.systemCache[sys.ID] = &CachedSystem{
 			System:    sys,
 			LearnedAt: time.Now(),
 			Verified:  false,
 		}
+		rt.cacheMu.Unlock()
 
-		// Also try to add to routing table
-		rt.Update(sys)
+		// Try to add to routing table (Update will skip CacheSystem since already cached)
+		bucketIdx := rt.BucketIndex(sys.ID)
+		bucket := rt.buckets[bucketIdx]
+
+		bucket.mu.Lock()
+		// Check if already in bucket
+		found := false
+		for _, entry := range bucket.entries {
+			if entry.System.ID == sys.ID {
+				found = true
+				break
+			}
+		}
+		if !found && len(bucket.entries) < rt.bucketK {
+			bucket.entries = append(bucket.entries, &BucketEntry{
+				System:    sys,
+				LastSeen:  time.Now(),
+				FailCount: 0,
+			})
+		}
+		bucket.mu.Unlock()
 	}
 }
 

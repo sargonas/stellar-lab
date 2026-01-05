@@ -26,6 +26,62 @@ func (dht *DHT) announceLoop() {
 	}
 }
 
+// peerLivenessLoop periodically checks if routing table peers are still alive
+// This runs more frequently than announce to maintain connections
+func (dht *DHT) peerLivenessLoop() {
+	defer dht.wg.Done()
+
+	// Wait for initial bootstrap
+	time.Sleep(30 * time.Second)
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-dht.shutdown:
+			return
+		case <-ticker.C:
+			dht.checkPeerLiveness()
+		}
+	}
+}
+
+// checkPeerLiveness pings all routing table peers to verify they're alive
+// and announces ourselves to them
+func (dht *DHT) checkPeerLiveness() {
+	nodes := dht.routingTable.GetAllRoutingTableNodes()
+	if len(nodes) == 0 {
+		return
+	}
+
+	log.Printf("Checking liveness of %d peers...", len(nodes))
+	
+	alive := 0
+	dead := 0
+
+	for _, sys := range nodes {
+		if sys.PeerAddress == "" {
+			continue
+		}
+
+		// Ping and announce in one go
+		if _, err := dht.Ping(sys.PeerAddress); err != nil {
+			dht.routingTable.RecordFailure(sys.ID)
+			dead++
+		} else {
+			dht.routingTable.MarkVerified(sys.ID)
+			// Also announce ourselves so they know we're alive
+			dht.AnnounceTo(sys.PeerAddress)
+			alive++
+		}
+	}
+
+	if dead > 0 {
+		log.Printf("Peer liveness: %d alive, %d unreachable", alive, dead)
+	}
+}
+
 // announceToNetwork announces ourselves to the K closest nodes
 func (dht *DHT) announceToNetwork() {
 	log.Printf("Announcing presence to network...")

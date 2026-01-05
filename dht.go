@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -73,17 +74,26 @@ func NewDHT(localSystem *System, storage *Storage, listenAddr string) *DHT {
 }
 
 // Start begins the DHT server and maintenance loops
-func (dht *DHT) Start() {
+// Returns an error if the server fails to bind
+func (dht *DHT) Start() error {
+	// Try to bind the listener BEFORE starting goroutines
+	listener, err := net.Listen("tcp", dht.listenAddr)
+	if err != nil {
+		return fmt.Errorf("DHT failed to bind to %s: %w", dht.listenAddr, err)
+	}
+
 	// Start HTTP server for DHT messages
-	go dht.startServer()
+	go dht.serveHTTP(listener)
 
 	// Start maintenance loops
-	dht.wg.Add(3)
+	dht.wg.Add(4)
 	go dht.announceLoop()
 	go dht.refreshLoop()
 	go dht.cacheMaintenanceLoop()
+	go dht.peerLivenessLoop()
 
 	log.Printf("DHT started for %s (%s)", dht.localSystem.Name, dht.localSystem.ID)
+	return nil
 }
 
 // Stop gracefully shuts down the DHT
@@ -93,15 +103,15 @@ func (dht *DHT) Stop() {
 	log.Printf("DHT stopped")
 }
 
-// startServer runs the HTTP server for DHT messages
-func (dht *DHT) startServer() {
+// serveHTTP runs the HTTP server on an existing listener
+func (dht *DHT) serveHTTP(listener net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dht", dht.handleDHTMessage)
 	mux.HandleFunc("/system", dht.handleSystemInfo)
 	mux.HandleFunc("/api/discovery", dht.handleDiscoveryInfo)
 
 	log.Printf("DHT listening on %s", dht.listenAddr)
-	if err := http.ListenAndServe(dht.listenAddr, mux); err != nil {
+	if err := http.Serve(listener, mux); err != nil {
 		log.Printf("DHT server error: %v", err)
 	}
 }

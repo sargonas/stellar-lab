@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,8 +20,8 @@ func main() {
 	name := flag.String("name", "", "Name for this star system")
 	seed := flag.String("seed", "", "Seed for deterministic UUID generation (optional)")
 	dbPath := flag.String("db", "stellar-mesh.db", "Path to SQLite database")
-	webPort := flag.Int("web", 8080, "Web interface port")
-	peerPort := flag.Int("peer", 7867, "Peer communication port")
+	address := flag.String("address", "0.0.0.0:8080", "Address to bind web UI server (host:port)")
+	peerPort := flag.String("peer-port", "7867", "Port for DHT peer communication")
 	bootstrapPeer := flag.String("bootstrap", "", "Bootstrap peer address (host:port)")
 	flag.Parse()
 
@@ -29,9 +30,15 @@ func main() {
 		log.Fatal("Error: -name flag is required")
 	}
 
+	// Construct peer address using same host as web UI but specified peer port
+	webHost := *address
+	if idx := strings.LastIndex(webHost, ":"); idx != -1 {
+		webHost = webHost[:idx]
+	}
+	peerAddr := webHost + ":" + *peerPort
+
 	// Generate addresses
-	webAddr := fmt.Sprintf("0.0.0.0:%d", *webPort)
-	peerAddr := fmt.Sprintf("0.0.0.0:%d", *peerPort)
+	webAddr := *address
 
 	// Initialize storage
 	storage, err := NewStorage(*dbPath)
@@ -98,10 +105,14 @@ func main() {
 	webInterface := NewWebInterface(dht, storage, webAddr)
 
 	// Start DHT (HTTP server + maintenance loops)
-	dht.Start()
+	if err := dht.Start(); err != nil {
+		log.Fatalf("Failed to start DHT: %v", err)
+	}
 
 	// Start web interface
-	go webInterface.Start()
+	if err := webInterface.Start(); err != nil {
+		log.Fatalf("Failed to start web interface: %v", err)
+	}
 
 	log.Printf("DHT protocol started")
 	log.Printf("Star system '%s' is now online", system.Name)
