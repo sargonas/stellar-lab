@@ -261,18 +261,18 @@ func BuildAttestationProof(systemID uuid.UUID, attestations []*Attestation) *Att
 
 // GetVerifiableRank determines rank from verifiable score
 func GetVerifiableRank(score float64) string {
-	switch {
-	case score >= 10000:
-		return "Diamond"
-	case score >= 5000:
-		return "Platinum"
-	case score >= 2000:
-		return "Gold"
-	case score >= 500:
-		return "Silver"
-	case score >= 100:
-		return "Bronze"
-	default:
-		return "Unranked"
-	}
+    switch {
+    case score >= 500000:
+        return "Diamond"
+    case score >= 150000:
+        return "Platinum"
+    case score >= 50000:
+        return "Gold"
+    case score >= 10000:
+        return "Silver"
+    case score >= 1000:
+        return "Bronze"
+    default:
+        return "Unranked"
+    }
 }
