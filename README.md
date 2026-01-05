@@ -170,6 +170,7 @@ Star class determines maximum routing table connections:
 
 | Class | Type | Distribution | Base Peers |
 |-------|------|--------------|------------|
+| X | Supermassive Black Hole | Unique | 20 |
 | O | Blue Supergiant | 0.003% | 12 |
 | B | Blue Giant | 0.13% | 10 |
 | A | White Star | 0.6% | 9 |
@@ -179,6 +180,8 @@ Star class determines maximum routing table connections:
 | M | Red Dwarf | 76% | 5 |
 
 **Multi-star bonuses:** Binary +3, Trinary +5
+
+**Note:** The X-class Supermassive Black Hole exists only at the galactic core (0,0,0) and serves as the genesis seed node.
 
 ### Spatial Coordinates
 

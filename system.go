@@ -11,12 +11,16 @@ import (
 
 // StarType represents the classification of a star
 type StarType struct {
-	Class       string  `json:"class"`        // O, B, A, F, G, K, M
+	Class       string  `json:"class"`        // O, B, A, F, G, K, M, X (black hole)
 	Description string  `json:"description"`  // Human readable description
 	Color       string  `json:"color"`        // Visual color (hex)
 	Temperature int     `json:"temperature"`  // Kelvin
 	Luminosity  float64 `json:"luminosity"`   // Relative to Sol
 }
+
+// GenesisBlackHoleID is the only system that can be a supermassive black hole
+// This is the UUID of the first seed node at the galactic core (0,0,0)
+var GenesisBlackHoleID = uuid.MustParse("40585bf2-5ccc-50fb-8da6-4f2e0135d5f7")
 
 // MultiStarSystem represents the stellar composition of a system
 type MultiStarSystem struct {
@@ -114,7 +118,25 @@ func generateSingleStar(seed uint64) StarType {
 // - Binary systems: ~40%
 // - Trinary systems: ~10%
 // - Higher multiples: <1% (we'll ignore these)
+// Special case: Genesis black hole at galactic core
 func (s *System) GenerateMultiStarSystem() {
+	// Check if this is the genesis black hole
+	if s.ID == GenesisBlackHoleID {
+		s.Stars = MultiStarSystem{
+			Primary: StarType{
+				Class:       "X",
+				Description: "Supermassive Black Hole",
+				Color:       "#000000",
+				Temperature: 0,
+				Luminosity:  0,
+			},
+			Count: 1,
+		}
+		// Force origin coordinates for the galactic core
+		s.X, s.Y, s.Z = 0, 0, 0
+		return
+	}
+
 	// Determine if single, binary, or trinary
 	systemTypeSeed := s.DeterministicSeed("system_type")
 	systemTypeRoll := systemTypeSeed % 100
@@ -300,6 +322,8 @@ func (s *System) GetMaxPeers() int {
     // Base peers by primary star class
     basePeers := 5
     switch s.Stars.Primary.Class {
+    case "X": // Supermassive Black Hole - galactic core hub
+        return 20
     case "O":
         basePeers = 12
     case "B":

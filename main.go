@@ -195,6 +195,12 @@ func truncateKey(key []byte) string {
 
 // logStarSystem logs the star configuration
 func logStarSystem(sys *System) {
+	// Special case for the genesis black hole
+	if sys.Stars.Primary.Class == "X" {
+		log.Printf("✦ Supermassive Black Hole - Galactic Core ✦")
+		return
+	}
+
 	if sys.Stars.IsTrinary {
 		log.Printf("Trinary Star System:")
 		log.Printf("  Primary:   %s (%s)", sys.Stars.Primary.Class, sys.Stars.Primary.Description)
