@@ -5,6 +5,7 @@ import (
     "fmt"
     "html/template"
     "log"
+    "net"
     "net/http"
 )
 
@@ -56,9 +57,15 @@ func (w *WebInterface) Start() {
     mux.HandleFunc("/api/known-systems", w.handleKnownSystemsAPI)
     mux.HandleFunc("/api/stats", w.handleStatsAPI)
 
+    // Create listener
+    listener, err := net.Listen("tcp", w.addr)
+    if err != nil {
+        log.Fatalf("Web server failed to bind to %s: %v", w.addr, err)
+    }
+
     log.Printf("Web interface listening on %s", w.addr)
-    if err := http.ListenAndServe(w.addr, mux); err != nil {
-        log.Printf("Web server error: %v", err)
+    if err := http.Serve(listener, mux); err != nil {
+        log.Fatalf("Web server error: %v", err)
     }
 }
 
