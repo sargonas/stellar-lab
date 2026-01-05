@@ -81,72 +81,41 @@ func FetchSeedNodes() []string {
 	return seeds
 }
 
-// DiscoverNetworkViaSeedNodes attempts to connect to seed nodes and discover peers
-func DiscoverNetworkViaSeedNodes(transport *StellarTransport, systemID uuid.UUID) {
+// DiscoverNetworkViaSeedNodes attempts to connect to seed nodes and discover a sponsor
+func DiscoverNetworkViaSeedNodes() (*System, string) {
 	// Fetch current seed list
 	seedNodes := FetchSeedNodes()
-	
+
 	if len(seedNodes) == 0 {
 		log.Println("No seed nodes available. You can:")
 		log.Println("  1. Use -bootstrap flag to connect to a known peer")
 		log.Println("  2. Submit a PR to add seed nodes to SEED-NODES.txt")
 		log.Println("  3. Wait for other nodes to connect to you")
-		return
+		return nil, ""
 	}
 
-	connectedToSeed := false
-	
-	// Try to connect to at least one seed node
+	// Try each seed node to find a sponsor
 	for _, seedAddr := range seedNodes {
 		log.Printf("Trying seed node: %s", seedAddr)
-		
-		// Try to fetch system info from seed to verify it's alive
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get("http://" + seedAddr + "/api/system")
+
+		sponsor, sponsorAddr, err := DiscoverSponsorSystem(seedAddr)
 		if err != nil {
-			log.Printf("  Seed node %s unavailable: %v", seedAddr, err)
+			log.Printf("  Failed: %v", err)
 			continue
 		}
-		resp.Body.Close()
-		
-		// Add the seed as a peer
-		if err := transport.AddPeer(systemID, seedAddr); err != nil {
-			log.Printf("  Failed to add seed node %s: %v", seedAddr, err)
-			continue
-		}
-		
-		log.Printf("  Connected to seed node: %s", seedAddr)
-		connectedToSeed = true
-		
-		// Wait a moment for peer exchange to happen
-		time.Sleep(2 * time.Second)
-		
-		// Check if we discovered other peers
-		peers := transport.GetPeers()
-		discoveredCount := 0
-		for _, peer := range peers {
-			if peer.Address != seedAddr {
-				discoveredCount++
-			}
-		}
-		
-		if discoveredCount > 0 {
-			log.Printf("  Discovered %d peers from seed node", discoveredCount)
-			
-			// We have other peers now, we can disconnect from seed if we want
-			// (Optional: uncomment to disconnect from seeds after discovery)
-			// transport.RemovePeer(seedAddr)
-			// log.Printf("  Disconnected from seed node (now connected to discovered peers)")
-		}
-		
-		break // Successfully connected to one seed, that's enough
+
+		log.Printf("  Found sponsor system: %s at (%.2f, %.2f, %.2f)",
+			sponsor.Name, sponsor.X, sponsor.Y, sponsor.Z)
+		log.Printf("  Distance from origin: %.2f",
+			math.Sqrt(sponsor.X*sponsor.X + sponsor.Y*sponsor.Y + sponsor.Z*sponsor.Z))
+
+		return sponsor, sponsorAddr
 	}
-	
-	if !connectedToSeed {
-		log.Println("Warning: Could not connect to any seed nodes")
-		log.Println("  Your node is running but isolated")
-		log.Println("  Other nodes can still connect to you directly")
-	}
+
+	log.Println("Warning: Could not find sponsor from any seed nodes")
+	log.Println("  Your node is running but isolated")
+	log.Println("  Other nodes can still connect to you directly")
+	return nil, ""
 }
 
 // StartCompactionScheduler runs periodic database compaction
@@ -349,31 +318,37 @@ func main() {
 
 	// Load or create system
 	var system *System
+	var nearbySystem *System
+	var sponsorPeerAddress string
 	existing, err := storage.LoadSystem()
 	if err != nil {
-		// Try to get a nearby system from bootstrap peer if provided
-		var nearbySystem *System
-		var bootstrapSystemID uuid.UUID
+		// New system - need to find a sponsor to cluster near
+
 		if *bootstrap != "" {
-		    log.Printf("Fetching bootstrap peer info from %s", *bootstrap)
-		    resp, err := http.Get("http://" + *bootstrap + "/system")
-		    if err == nil {
-		        defer resp.Body.Close()
-		        var bootstrapSystem System
-		        if json.NewDecoder(resp.Body).Decode(&bootstrapSystem) == nil {
-		            nearbySystem = &bootstrapSystem
-		            bootstrapSystemID = bootstrapSystem.ID
-		            log.Printf("Will cluster near bootstrap system: %s at (%.2f, %.2f, %.2f)",
-		                nearbySystem.Name, nearbySystem.X, nearbySystem.Y, nearbySystem.Z)
-		        }
-		    } else {
-		        log.Printf("Warning: Could not fetch bootstrap peer info: %v", err)
-		    }
+			// Manual bootstrap provided
+			log.Printf("Fetching bootstrap peer info from %s", *bootstrap)
+			resp, err := http.Get("http://" + *bootstrap + "/system")
+			if err == nil {
+				defer resp.Body.Close()
+				var bootstrapSystem System
+				if json.NewDecoder(resp.Body).Decode(&bootstrapSystem) == nil {
+					nearbySystem = &bootstrapSystem
+					sponsorPeerAddress = *bootstrap
+					log.Printf("Will cluster near bootstrap system: %s at (%.2f, %.2f, %.2f)",
+						nearbySystem.Name, nearbySystem.X, nearbySystem.Y, nearbySystem.Z)
+				}
+			} else {
+				log.Printf("Warning: Could not fetch bootstrap peer info: %v", err)
+			}
+		} else {
+			// No bootstrap - discover via seed nodes
+			log.Println("No bootstrap peer provided, discovering network via seed nodes...")
+			nearbySystem, sponsorPeerAddress = DiscoverNetworkViaSeedNodes()
 		}
 
-		// Create new system (clustered if we got bootstrap info)
+		// Create new system (clustered if we got sponsor info)
 		log.Printf("Creating new star system: %s", *name)
-		
+
 		// Create system with semi-deterministic or random UUID
 		var newID uuid.UUID
 		if *useRandom {
@@ -398,32 +373,32 @@ func main() {
 				log.Printf("Using hardware-based UUID")
 			}
 		}
-		
+
 		// Create system manually with our chosen UUID
 		keys, err := GenerateKeyPair()
 		if err != nil {
 			log.Fatalf("Failed to generate cryptographic keys: %v", err)
 		}
-		
+
 		system = &System{
-			ID:         newID,
-			Name:       *name,
-			Address:    *address,
+			ID:          newID,
+			Name:        *name,
+			Address:     *address,
 			PeerAddress: peerAddress,
-			CreatedAt:  time.Now(),
-			LastSeenAt: time.Now(),
-			Keys:       keys,
+			CreatedAt:   time.Now(),
+			LastSeenAt:  time.Now(),
+			Keys:        keys,
 		}
 		system.GenerateCoordinates(nearbySystem)
 		system.GenerateMultiStarSystem()
-		
+
 		if err := storage.SaveSystem(system); err != nil {
 			log.Fatalf("Failed to save system: %v", err)
 		}
-		
+
 		log.Printf("System ID: %s", system.ID)
 		log.Printf("Public Key: %s...", base64.StdEncoding.EncodeToString(system.Keys.PublicKey)[:16])
-		
+
 		// Display star system composition
 		if system.Stars.IsTrinary {
 			log.Printf("Trinary Star System:")
@@ -438,16 +413,16 @@ func main() {
 			log.Printf("Single Star System:")
 			log.Printf("  Star: %s (%s)", system.Stars.Primary.Class, system.Stars.Primary.Description)
 		}
-		
+
 		log.Printf("Coordinates: (%.2f, %.2f, %.2f)", system.X, system.Y, system.Z)
 		if nearbySystem != nil {
-			log.Printf("Distance from bootstrap: %.2f units", system.DistanceTo(nearbySystem))
+			log.Printf("Distance from sponsor: %.2f units", system.DistanceTo(nearbySystem))
 		}
 	} else {
 		// Use existing system
 		system = existing
 		log.Printf("Loaded existing system: %s (ID: %s)", system.Name, system.ID)
-		
+
 		// Display star system composition
 		if system.Stars.IsTrinary {
 			log.Printf("Trinary Star System:")
@@ -462,19 +437,39 @@ func main() {
 			log.Printf("Single Star System:")
 			log.Printf("  Star: %s (%s)", system.Stars.Primary.Class, system.Stars.Primary.Description)
 		}
-		
+
 		log.Printf("Coordinates: (%.2f, %.2f, %.2f)", system.X, system.Y, system.Z)
-		
+
 		// Log public key
 		if system.Keys != nil {
 			log.Printf("Public Key: %s...", base64.StdEncoding.EncodeToString(system.Keys.PublicKey)[:16])
 		}
-		
+
 		// Update address if changed
 		if system.Address != *address || system.PeerAddress != peerAddress {
-    		system.Address = *address
-    		system.PeerAddress = peerAddress
-    		storage.SaveSystem(system)
+			system.Address = *address
+			system.PeerAddress = peerAddress
+			storage.SaveSystem(system)
+		}
+
+		// For existing systems, try to reconnect to sponsor via seed nodes if no peers
+		if *bootstrap == "" {
+			peers, _ := storage.GetPeers()
+			if len(peers) == 0 {
+				log.Println("No known peers, discovering network via seed nodes...")
+				nearbySystem, sponsorPeerAddress = DiscoverNetworkViaSeedNodes()
+			}
+		} else {
+			sponsorPeerAddress = *bootstrap
+			// Fetch bootstrap system info for peer ID
+			resp, err := http.Get("http://" + *bootstrap + "/system")
+			if err == nil {
+				defer resp.Body.Close()
+				var bootstrapSystem System
+				if json.NewDecoder(resp.Body).Decode(&bootstrapSystem) == nil {
+					nearbySystem = &bootstrapSystem
+				}
+			}
 		}
 	}
 
@@ -483,16 +478,12 @@ func main() {
 	transport.Start()
 	log.Println("Stellar transport protocol started")
 
-	// Connect to bootstrap peer if provided, otherwise try seed nodes
-	if *bootstrap != "" {
-	    log.Printf("Attempting to connect to bootstrap peer: %s", *bootstrap)
-	    if bootstrapSystemID != uuid.Nil {
-	        if err := transport.AddPeer(bootstrapSystemID, *bootstrap); err != nil {
-	            log.Printf("Warning: Failed to add bootstrap peer: %v", err)
-	        }
-	    } else {
-	        log.Printf("Warning: Could not add bootstrap peer - unknown system ID")
-	    }
+	// Connect to sponsor peer if we have one
+	if sponsorPeerAddress != "" && nearbySystem != nil {
+		log.Printf("Connecting to sponsor peer: %s", sponsorPeerAddress)
+		if err := transport.AddPeer(nearbySystem.ID, sponsorPeerAddress); err != nil {
+			log.Printf("Warning: Failed to add sponsor peer: %v", err)
+		}
 	}
 
 	// Initialize and start API server

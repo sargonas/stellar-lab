@@ -65,7 +65,8 @@ func (g *StellarTransport) Start() {
 	go func() {
 	    mux := http.NewServeMux()
 	    mux.HandleFunc("/transport", g.HandleIncomingMessage)
-	    mux.HandleFunc("/system", g.HandleSystemInfo)  // Add this line
+	    mux.HandleFunc("/system", g.HandleSystemInfo)
+	    mux.HandleFunc("/api/discovery", g.HandleDiscoveryInfo)
 
 	    log.Printf("Peer transport listening on %s", g.listenAddr)
 	    if err := http.ListenAndServe(g.listenAddr, mux); err != nil {
@@ -425,19 +426,6 @@ func (g *StellarTransport) HandleSystemInfo(w http.ResponseWriter, r *http.Reque
 
 // HandleDiscoveryInfo returns discovery info on peer port
 func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Request) {
-    type DiscoverySystem struct {
-        ID                 string  `json:"id"`
-        Name               string  `json:"name"`
-        X                  float64 `json:"x"`
-        Y                  float64 `json:"y"`
-        Z                  float64 `json:"z"`
-        PeerAddress        string  `json:"peer_address"`
-        DistanceFromOrigin float64 `json:"distance_from_origin"`
-        CurrentPeers       int     `json:"current_peers"`
-        MaxPeers           int     `json:"max_peers"`
-        HasCapacity        bool    `json:"has_capacity"`
-    }
-
     systems := []DiscoverySystem{}
 
     // Get our peer count

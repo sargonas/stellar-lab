@@ -291,22 +291,3 @@ type DiscoverySystem struct {
 
 // MaxPeers is the maximum number of peers a node will accept
 const MaxPeers = 5
-
-// NewSystem creates a new system with generated UUID and coordinates
-// If nearbySystem is provided, the new system will be clustered near it
-func NewSystem(name string, address string, nearbySystem *System) *System {
-	// Generate cryptographic keypair
-	keys, _ := GenerateKeyPair()
-	
-	s := &System{
-		ID:         uuid.New(),
-		Name:       name,
-		Address:    address,
-		CreatedAt:  time.Now(),
-		LastSeenAt: time.Now(),
-		Keys:       keys,
-	}
-	s.GenerateCoordinates(nearbySystem)
-	s.GenerateMultiStarSystem()
-	return s
-}
