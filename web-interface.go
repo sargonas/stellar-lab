@@ -146,12 +146,13 @@ const webInterfaceHTML = `<!DOCTYPE html>
             {{if .Peers}}
             <ul class="peer-list">
                 {{range .Peers}}
-                <li class="peer-item">
-                    <strong>{{.Name}}</strong><br>
-                    ID: {{.ID}}<br>
-                    Address: {{.Address}} | Last seen: {{.LastSeen}}
-                </li>
-                {{end}}
+				<li class="peer-item">
+				    <strong>{{.Name}}</strong><br>
+				    {{.StarInfo}}<br>
+				    ID: {{.ID}}<br>
+				    Address: {{.Address}} | Last seen: {{.LastSeen}}
+				</li>
+				{{end}}
             </ul>
             {{else}}
             <p>No peers connected yet.</p>
@@ -221,6 +222,7 @@ type StarDisplay struct {
 
 type PeerDisplay struct {
 	Name     string
+	StarInfo string
 	ID       string
 	Address  string
 	LastSeen string
@@ -235,8 +237,18 @@ func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 	// Build peer displays with system info fetches
 	peerDisplays := make([]PeerDisplay, 0)
 	for _, peer := range peers {
+		name := peer.SystemID.String()[:8] + "..."
+		starInfo := "Unknown star type"
+
+		// Try to get cached system info
+		if peerSys, err := api.storage.GetPeerSystem(peer.SystemID); err == nil && peerSys != nil {
+			name = peerSys.Name
+			starInfo = peerSys.Stars.Primary.Class + " - " + peerSys.Stars.Primary.Description
+		}
+
 		peerDisplays = append(peerDisplays, PeerDisplay{
-			Name:     peer.SystemID.String()[:8] + "...", // Will be replaced with actual name if we can fetch it
+			Name:     name,
+			StarInfo: starInfo,
 			ID:       peer.SystemID.String(),
 			Address:  peer.Address,
 			LastSeen: formatDuration(time.Since(peer.LastSeenAt)),
