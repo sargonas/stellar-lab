@@ -41,11 +41,14 @@ func NewStorage(dbPath string) (*Storage, error) {
 		return nil, err
 	}
 
+	// Enable WAL mode for better concurrent access
+	db.Exec("PRAGMA journal_mode=WAL")
+	db.Exec("PRAGMA busy_timeout=5000")
+
 	storage := &Storage{db: db}
 	if err := storage.createTables(); err != nil {
 		return nil, err
 	}
-
 	return storage, nil
 }
 
