@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const MaxPeers = 5
+
 // TransportMessage represents information exchanged between nodes
 // In protocol v1.0.0+, attestations are REQUIRED for security
 type TransportMessage struct {
@@ -62,13 +64,14 @@ func NewStellarTransport(system *System, storage *Storage, listenAddr string) *S
 func (g *StellarTransport) Start() {
 	// Start peer-to-peer HTTP server on separate port
 	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/transport", g.HandleIncomingMessage)
+	    mux := http.NewServeMux()
+	    mux.HandleFunc("/transport", g.HandleIncomingMessage)
+	    mux.HandleFunc("/system", g.HandleSystemInfo)  // Add this line
 
-		log.Printf("Peer transport listening on %s", g.listenAddr)
-		if err := http.ListenAndServe(g.listenAddr, mux); err != nil {
-			log.Printf("Peer transport server error: %v", err)
-		}
+	    log.Printf("Peer transport listening on %s", g.listenAddr)
+	    if err := http.ListenAndServe(g.listenAddr, mux); err != nil {
+	        log.Printf("Peer transport server error: %v", err)
+	    }
 	}()
 
 	// Periodic gossip with random peers
@@ -306,6 +309,20 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 			msg.Attestation.FromSystemID, msg.System.Name, msg.Attestation.MessageType)
 	}
 
+	// Check if this is a new peer and we're at capacity
+	if msg.System != nil {
+		g.mu.RLock()
+		_, existingPeer := g.peers[msg.System.ID]
+		peerCount := len(g.peers)
+		g.mu.RUnlock()
+
+		if !existingPeer && peerCount >= MaxPeers {
+			log.Printf("Rejecting new peer %s (%s) - at max capacity (%d/%d)",
+				msg.System.ID, msg.System.Name, peerCount, MaxPeers)
+			return fmt.Errorf("peer at max capacity")
+		}
+	}
+
 	// Cache peer's system info for map visualization
 	if msg.System != nil {
 		g.storage.SavePeerSystem(msg.System)
@@ -399,4 +416,81 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// HandleSystemInfo returns this node's system info (for bootstrap clustering)
+func (g *StellarTransport) HandleSystemInfo(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(g.localSystem)
+}
+
+// HandleDiscoveryInfo returns discovery info on peer port
+func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Request) {
+    type DiscoverySystem struct {
+        ID                 string  `json:"id"`
+        Name               string  `json:"name"`
+        X                  float64 `json:"x"`
+        Y                  float64 `json:"y"`
+        Z                  float64 `json:"z"`
+        PeerAddress        string  `json:"peer_address"`
+        DistanceFromOrigin float64 `json:"distance_from_origin"`
+        CurrentPeers       int     `json:"current_peers"`
+        MaxPeers           int     `json:"max_peers"`
+        HasCapacity        bool    `json:"has_capacity"`
+    }
+
+    systems := []DiscoverySystem{}
+
+    // Get our peer count
+    g.mu.RLock()
+    selfPeerCount := len(g.peers)
+    peers := make([]*Peer, 0, len(g.peers))
+    for _, peer := range g.peers {
+        peers = append(peers, peer)
+    }
+    g.mu.RUnlock()
+
+    // Add self (only if we have capacity)
+    selfDist := math.Sqrt(g.localSystem.X*g.localSystem.X + g.localSystem.Y*g.localSystem.Y + g.localSystem.Z*g.localSystem.Z)
+    selfHasCapacity := selfPeerCount < MaxPeers
+
+    systems = append(systems, DiscoverySystem{
+        ID:                 g.localSystem.ID.String(),
+        Name:               g.localSystem.Name,
+        X:                  g.localSystem.X,
+        Y:                  g.localSystem.Y,
+        Z:                  g.localSystem.Z,
+        PeerAddress:        g.localSystem.PeerAddress,
+        DistanceFromOrigin: selfDist,
+        CurrentPeers:       selfPeerCount,
+        MaxPeers:           MaxPeers,
+        HasCapacity:        selfHasCapacity,
+    })
+
+    // Add known peer systems
+    // Note: We don't know their exact peer counts, so we estimate/assume they have capacity
+    // They'll reject the connection if they don't
+    for _, peer := range peers {
+        peerSys, err := g.storage.GetPeerSystem(peer.SystemID)
+        if err != nil || peerSys == nil {
+            continue
+        }
+
+        dist := math.Sqrt(peerSys.X*peerSys.X + peerSys.Y*peerSys.Y + peerSys.Z*peerSys.Z)
+        systems = append(systems, DiscoverySystem{
+            ID:                 peerSys.ID.String(),
+            Name:               peerSys.Name,
+            X:                  peerSys.X,
+            Y:                  peerSys.Y,
+            Z:                  peerSys.Z,
+            PeerAddress:        peer.Address,
+            DistanceFromOrigin: dist,
+            CurrentPeers:       -1,   // Unknown
+            MaxPeers:           MaxPeers,
+            HasCapacity:        true, // Assume yes, will be rejected if not
+        })
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(systems)
 }

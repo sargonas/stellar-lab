@@ -5,7 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
+	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -196,6 +199,84 @@ func runCompaction(storage *Storage, keepDays int) {
     if stats.SpaceReclaimed > 0 {
         log.Printf("  - Space reclaimed: %d bytes (%.2f MB)", stats.SpaceReclaimed, float64(stats.SpaceReclaimed)/1024/1024)
     }
+}
+
+// DiscoverSponsorSystem contacts the network and finds a sponsor system to cluster near
+func DiscoverSponsorSystem(seedAddress string) (*System, string, error) {
+    client := &http.Client{Timeout: 10 * time.Second}
+    resp, err := client.Get("http://" + seedAddress + "/api/discovery")
+    if err != nil {
+        return nil, "", fmt.Errorf("failed to contact seed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != 200 {
+        return nil, "", fmt.Errorf("seed returned status %d", resp.StatusCode)
+    }
+
+    var systems []DiscoverySystem
+    if err := json.NewDecoder(resp.Body).Decode(&systems); err != nil {
+        return nil, "", fmt.Errorf("failed to decode discovery info: %w", err)
+    }
+
+    if len(systems) == 0 {
+        return nil, "", fmt.Errorf("no systems available")
+    }
+
+    sponsor := selectWeightedSponsor(systems)
+    if sponsor == nil {
+        return nil, "", fmt.Errorf("no systems with available capacity")
+    }
+
+    sponsorSystem := &System{
+        ID:   uuid.MustParse(sponsor.ID),
+        Name: sponsor.Name,
+        X:    sponsor.X,
+        Y:    sponsor.Y,
+        Z:    sponsor.Z,
+    }
+
+    return sponsorSystem, sponsor.PeerAddress, nil
+}
+
+// selectWeightedSponsor picks a sponsor with bias toward farther systems
+func selectWeightedSponsor(systems []DiscoverySystem) *DiscoverySystem {
+    available := []DiscoverySystem{}
+    for _, sys := range systems {
+        if sys.HasCapacity {
+            available = append(available, sys)
+        }
+    }
+
+    if len(available) == 0 {
+        return nil
+    }
+
+    if len(available) == 1 {
+        return &available[0]
+    }
+
+    totalWeight := 0.0
+    weights := make([]float64, len(available))
+
+    for i, sys := range available {
+        weight := math.Max(1.0, sys.DistanceFromOrigin/100.0)
+        weight = weight * weight
+        weights[i] = weight
+        totalWeight += weight
+    }
+
+    roll := rand.Float64() * totalWeight
+    cumulative := 0.0
+
+    for i, weight := range weights {
+        cumulative += weight
+        if roll <= cumulative {
+            return &available[i]
+        }
+    }
+
+    return &available[len(available)-1]
 }
 
 func main() {
