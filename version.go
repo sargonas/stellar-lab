@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// Protocol version for DHT-based stellar-mesh
+// Protocol version for DHT-based stellar-mesh v1.0.0
 const (
-	ProtocolMajor = 0
-	ProtocolMinor = 11
+	ProtocolMajor = 1
+	ProtocolMinor = 0
 	ProtocolPatch = 0
 )
 

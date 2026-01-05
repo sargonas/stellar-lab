@@ -17,21 +17,21 @@ type Storage struct {
 
 // AttestationSummary holds aggregated attestation data for a time period
 type AttestationSummary struct {
-    PeerSystemID      string
-    Direction         string // "inbound" or "outbound"
-    PeriodStart       int64
-    PeriodEnd         int64
-    HeartbeatCount    int
-    PeerExchangeCount int
-    RelayCount        int
-    OtherCount        int
-    SampleSignature   string
-    SamplePublicKey   string
+    PeerSystemID    string
+    Direction       string // "inbound" or "outbound"
+    PeriodStart     int64
+    PeriodEnd       int64
+    PingCount       int
+    FindNodeCount   int
+    AnnounceCount   int
+    OtherCount      int
+    SampleSignature string
+    SamplePublicKey string
 }
 
 // TotalCount returns the total attestations in this summary
 func (s *AttestationSummary) TotalCount() int {
-    return s.HeartbeatCount + s.PeerExchangeCount + s.RelayCount + s.OtherCount
+    return s.PingCount + s.FindNodeCount + s.AnnounceCount + s.OtherCount
 }
 
 // NewStorage initializes SQLite database and creates tables
@@ -133,9 +133,9 @@ func (s *Storage) createTables() error {
     direction TEXT NOT NULL,
     period_start INTEGER NOT NULL,
     period_end INTEGER NOT NULL,
-    heartbeat_count INTEGER DEFAULT 0,
-    peer_exchange_count INTEGER DEFAULT 0,
-    relay_count INTEGER DEFAULT 0,
+    ping_count INTEGER DEFAULT 0,
+    find_node_count INTEGER DEFAULT 0,
+    announce_count INTEGER DEFAULT 0,
     other_count INTEGER DEFAULT 0,
     sample_signature TEXT NOT NULL,
     sample_public_key TEXT NOT NULL,
@@ -598,14 +598,14 @@ func (s *Storage) CompactAttestations(keepDays int) (*CompactionStats, error) {
         weekStart int64
     }
     type summaryData struct {
-        periodStart       int64
-        periodEnd         int64
-        heartbeatCount    int
-        peerExchangeCount int
-        relayCount        int
-        otherCount        int
-        sampleSig         string
-        sampleKey         string
+        periodStart   int64
+        periodEnd     int64
+        pingCount     int
+        findNodeCount int
+        announceCount int
+        otherCount    int
+        sampleSig     string
+        sampleKey     string
     }
     summaries := make(map[summaryKey]*summaryData)
 
@@ -641,12 +641,12 @@ func (s *Storage) CompactAttestations(keepDays int) (*CompactionStats, error) {
 
         // Count by type
         switch msgType {
-        case "heartbeat":
-            summaries[key].heartbeatCount += count
-        case "peer_exchange":
-            summaries[key].peerExchangeCount += count
-        case "relay":
-            summaries[key].relayCount += count
+        case "ping":
+            summaries[key].pingCount += count
+        case "find_node":
+            summaries[key].findNodeCount += count
+        case "announce":
+            summaries[key].announceCount += count
         default:
             summaries[key].otherCount += count
         }
@@ -657,7 +657,7 @@ func (s *Storage) CompactAttestations(keepDays int) (*CompactionStats, error) {
     insertStmt, err := tx.Prepare(`
         INSERT OR REPLACE INTO attestation_summaries (
             peer_system_id, direction, period_start, period_end,
-            heartbeat_count, peer_exchange_count, relay_count, other_count,
+            ping_count, find_node_count, announce_count, other_count,
             sample_signature, sample_public_key, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
@@ -669,7 +669,7 @@ func (s *Storage) CompactAttestations(keepDays int) (*CompactionStats, error) {
     for key, data := range summaries {
         _, err := insertStmt.Exec(
             key.peerID, key.direction, key.weekStart, data.periodEnd,
-            data.heartbeatCount, data.peerExchangeCount, data.relayCount, data.otherCount,
+            data.pingCount, data.findNodeCount, data.announceCount, data.otherCount,
             data.sampleSig, data.sampleKey, time.Now().Unix(),
         )
         if err != nil {
@@ -729,7 +729,7 @@ func (s *Storage) CompactAttestations(keepDays int) (*CompactionStats, error) {
 func (s *Storage) GetAttestationSummaries(systemID uuid.UUID) ([]AttestationSummary, error) {
     rows, err := s.db.Query(`
         SELECT peer_system_id, direction, period_start, period_end,
-               heartbeat_count, peer_exchange_count, relay_count, other_count,
+               ping_count, find_node_count, announce_count, other_count,
                sample_signature, sample_public_key
         FROM attestation_summaries
         WHERE peer_system_id = ?
@@ -745,7 +745,7 @@ func (s *Storage) GetAttestationSummaries(systemID uuid.UUID) ([]AttestationSumm
         var s AttestationSummary
         err := rows.Scan(
             &s.PeerSystemID, &s.Direction, &s.PeriodStart, &s.PeriodEnd,
-            &s.HeartbeatCount, &s.PeerExchangeCount, &s.RelayCount, &s.OtherCount,
+            &s.PingCount, &s.FindNodeCount, &s.AnnounceCount, &s.OtherCount,
             &s.SampleSignature, &s.SamplePublicKey,
         )
         if err != nil {
@@ -761,7 +761,7 @@ func (s *Storage) GetAttestationSummaries(systemID uuid.UUID) ([]AttestationSumm
 func (s *Storage) GetAllAttestationSummaries() ([]AttestationSummary, error) {
     rows, err := s.db.Query(`
         SELECT peer_system_id, direction, period_start, period_end,
-               heartbeat_count, peer_exchange_count, relay_count, other_count,
+               ping_count, find_node_count, announce_count, other_count,
                sample_signature, sample_public_key
         FROM attestation_summaries
         ORDER BY period_start DESC
@@ -776,7 +776,7 @@ func (s *Storage) GetAllAttestationSummaries() ([]AttestationSummary, error) {
         var s AttestationSummary
         err := rows.Scan(
             &s.PeerSystemID, &s.Direction, &s.PeriodStart, &s.PeriodEnd,
-            &s.HeartbeatCount, &s.PeerExchangeCount, &s.RelayCount, &s.OtherCount,
+            &s.PingCount, &s.FindNodeCount, &s.AnnounceCount, &s.OtherCount,
             &s.SampleSignature, &s.SamplePublicKey,
         )
         if err != nil {
