@@ -37,11 +37,19 @@ func FetchSeedNodes() []string {
 		Timeout: 10 * time.Second,
 	}
 	
-	resp, err := client.Get(SeedNodeListURL)
+	req, err := http.NewRequest("GET", SeedNodeListURL, nil)
 	if err != nil {
-		log.Printf("Warning: Could not fetch seed list from GitHub: %v", err)
-		log.Printf("Using fallback seed nodes")
-		return FallbackSeedNodes
+	    log.Printf("Warning: Could not create request: %v", err)
+	    log.Printf("Using fallback seed nodes")
+	    return FallbackSeedNodes
+	}
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := client.Do(req)
+	if err != nil {
+	    log.Printf("Warning: Could not fetch seed list from GitHub: %v", err)
+	    log.Printf("Using fallback seed nodes")
+	    return FallbackSeedNodes
 	}
 	defer resp.Body.Close()
 	
