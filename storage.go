@@ -799,8 +799,9 @@ func (s *Storage) CountKnownSystems() int {
 // GetAllPeerSystems returns all cached peer system info (not just direct peers)
 func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     rows, err := s.db.Query(`
-        SELECT id, name, x, y, z, star_data, created_at, last_seen_at, address, peer_address
-        FROM peer_systems
+        SELECT ps.id, ps.name, ps.x, ps.y, ps.z, ps.star_class, ps.star_color, ps.star_description, p.address
+        FROM peer_systems ps
+        LEFT JOIN peers p ON ps.id = p.system_id
     `)
     if err != nil {
         return nil, err
@@ -811,11 +812,11 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     for rows.Next() {
         var sys System
         var idStr string
-        var starData []byte
         var peerAddress sql.NullString
 
-        err := rows.Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z, &starData,
-            &sys.CreatedAt, &sys.LastSeenAt, &sys.Address, &peerAddress)
+        err := rows.Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
+            &sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
+            &peerAddress)
         if err != nil {
             continue
         }
@@ -824,7 +825,6 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
         if peerAddress.Valid {
             sys.PeerAddress = peerAddress.String
         }
-        json.Unmarshal(starData, &sys.Stars)
         systems = append(systems, &sys)
     }
 

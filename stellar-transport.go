@@ -469,7 +469,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 			// Get all known peer systems from cache and try to connect
 			allSystems, err := g.storage.GetAllPeerSystems()
 			if err != nil {
-				continue
+				allSystems = []*System{} // Empty slice so we fall through to seed query
 			}
 
 			for _, sys := range allSystems {
@@ -522,6 +522,79 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 					break
 				}
 				g.mu.RUnlock()
+			}
+
+			// If we still don't have enough peers and found nothing in cache,
+			// try querying seed nodes directly
+			g.mu.RLock()
+			stillNeedPeers := len(g.peers) < minPeers
+			g.mu.RUnlock()
+
+			if stillNeedPeers && len(allSystems) == 0 {
+				log.Printf("No cached systems, querying seed nodes...")
+				seedNodes := FetchSeedNodes()
+				for _, seedAddr := range seedNodes {
+					resp, err := http.Get("http://" + seedAddr + "/api/discovery")
+					if err != nil {
+						continue
+					}
+
+					var systems []DiscoverySystem
+					if err := json.NewDecoder(resp.Body).Decode(&systems); err != nil {
+						resp.Body.Close()
+						continue
+					}
+					resp.Body.Close()
+
+					for _, sys := range systems {
+						if !sys.HasCapacity || sys.ID == g.localSystem.ID.String() {
+							continue
+						}
+
+						g.mu.RLock()
+						_, exists := g.peers[uuid.MustParse(sys.ID)]
+						currentCount := len(g.peers)
+						g.mu.RUnlock()
+
+						if exists || currentCount >= MaxPeers {
+							continue
+						}
+
+						log.Printf("Trying seed-discovered peer: %s (%s)", sys.Name, sys.PeerAddress)
+						tempPeer := &Peer{
+							SystemID:   uuid.MustParse(sys.ID),
+							Address:    sys.PeerAddress,
+							LastSeenAt: time.Now(),
+						}
+
+						if err := g.sendHeartbeat(tempPeer); err != nil {
+							log.Printf("  Rejected: %v", err)
+							continue
+						}
+
+						g.mu.Lock()
+						if _, exists := g.peers[tempPeer.SystemID]; !exists && len(g.peers) < MaxPeers {
+							g.peers[tempPeer.SystemID] = tempPeer
+							g.storage.SavePeer(tempPeer)
+							log.Printf("  Successfully connected to %s", sys.Name)
+						}
+						g.mu.Unlock()
+
+						g.mu.RLock()
+						if len(g.peers) >= minPeers {
+							g.mu.RUnlock()
+							break
+						}
+						g.mu.RUnlock()
+					}
+
+					g.mu.RLock()
+					if len(g.peers) >= minPeers {
+						g.mu.RUnlock()
+						break
+					}
+					g.mu.RUnlock()
+				}
 			}
 		}
 	}
