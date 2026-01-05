@@ -20,7 +20,7 @@ func main() {
 	seed := flag.String("seed", "", "Seed for deterministic UUID generation (optional)")
 	dbPath := flag.String("db", "stellar-mesh.db", "Path to SQLite database")
 	address := flag.String("address", "0.0.0.0:8080", "Address to bind web UI server (host:port)")
-	peerPort := flag.String("peer-port", "7867", "Port for DHT peer communication")
+	publicAddr := flag.String("public-address", "", "Public address for peer connections (host:port)")
 	bootstrapPeer := flag.String("bootstrap", "", "Bootstrap peer address (host:port)")
 	flag.Parse()
 
@@ -28,13 +28,18 @@ func main() {
 	if *name == "" {
 		log.Fatal("Error: -name flag is required")
 	}
-
-	// Construct peer address using same host as web UI but specified peer port
-	webHost := *address
-	if idx := strings.LastIndex(webHost, ":"); idx != -1 {
-		webHost = webHost[:idx]
+	if *publicAddr == "" {
+		log.Fatal("Error: -public-address flag is required (e.g., -public-address \"myhost.com:7867\")")
 	}
-	peerAddr := webHost + ":" + *peerPort
+
+	peerAddr := *publicAddr
+
+	// Extract port from public address for local binding
+	peerPort := "7867" // default
+	if idx := strings.LastIndex(*publicAddr, ":"); idx != -1 {
+		peerPort = (*publicAddr)[idx+1:]
+	}
+	listenAddr := "0.0.0.0:" + peerPort
 
 	// Generate addresses
 	webAddr := *address
@@ -81,7 +86,10 @@ func main() {
 
 		// Generate coordinates (will be deterministic since no sponsor yet)
 		// Real coordinates get assigned during bootstrap when we find a sponsor
-		system.GenerateCoordinates(nil)
+		// Skip for black hole - it's already at 0,0,0
+		if system.Stars.Primary.Class != "X" {
+			system.GenerateCoordinates(nil)
+		}
 
 		// Save to database
 		if err := storage.SaveSystem(system); err != nil {
@@ -101,8 +109,8 @@ func main() {
 	logStarSystem(system)
 	log.Printf("Coordinates: (%.2f, %.2f, %.2f)", system.X, system.Y, system.Z)
 
-	// Create DHT
-	dht := NewDHT(system, storage, peerAddr)
+	// Create DHT (listenAddr for binding, peerAddr is already set on system)
+	dht := NewDHT(system, storage, listenAddr)
 
 	// Create web interface
 	webInterface := NewWebInterface(dht, storage, webAddr)
@@ -120,7 +128,7 @@ func main() {
 	log.Printf("DHT protocol started")
 	log.Printf("Star system '%s' is now online", system.Name)
 	log.Printf("  Web UI: http://%s", webAddr)
-	log.Printf("  DHT port: %s", peerAddr)
+	log.Printf("  DHT: %s (listening on %s)", peerAddr, listenAddr)
 
 	// Bootstrap into the network
 	go func() {

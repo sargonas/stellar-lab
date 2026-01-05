@@ -86,7 +86,7 @@ go build -o stellar-mesh
 ### Run Your First Node
 
 ```bash
-./stellar-mesh -name "Sol"
+./stellar-mesh -name "Sol" -public-address "your-domain.com:7867"
 ```
 
 Visit http://localhost:8080 for the web interface.
@@ -98,23 +98,23 @@ Nodes discover the network automatically via seeder nodes:
 Or you can manually bootstrap from a specific peer:
 
 ```bash
-./stellar-mesh -name "Alpha Centauri" -bootstrap "192.168.1.100:7867"
+./stellar-mesh -name "Alpha Centauri" -public-address "my-server.com:7867" -bootstrap "192.168.1.100:7867"
 ```
 
 ### Multi-Node Local Testing
 
-When testing locally, you can run muiltiple nodes from one install base by specifying unique database files, ports, and custom seeds.
+When testing locally, you can run multiple nodes from one install base by specifying unique database files, ports, and custom seeds.
 ```bash
 # Terminal 1 - Seed node
-./stellar-mesh -name "Sol" -seed "sol" -db "sol.db"
+./stellar-mesh -name "Sol" -seed "sol" -public-address "localhost:7867" -db "sol.db"
 
 # Terminal 2
 ./stellar-mesh -name "Alpha" -seed "alpha" \
-  -address "0.0.0.0:8081" -peer-port "7868" -db "alpha.db"
+  -public-address "localhost:7868" -address "0.0.0.0:8081" -db "alpha.db"
 
 # Terminal 3
 ./stellar-mesh -name "Beta" -seed "beta" \
-  -address "0.0.0.0:8082" -peer-port "7869" -db "beta.db"
+  -public-address "localhost:7869" -address "0.0.0.0:8082" -db "beta.db"
 ```
 
 ## Command-Line Flags
@@ -122,9 +122,9 @@ When testing locally, you can run muiltiple nodes from one install base by speci
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-name` | (required) | Name of your star system |
+| `-public-address` | (required) | Public address for peer connections (host:port) |
 | `-seed` | (random) | Seed for deterministic UUID generation in development |
 | `-address` | `0.0.0.0:8080` | Web UI bind address (host:port) |
-| `-peer-port` | `7867` | DHT protocol port |
 | `-db` | `stellar-mesh.db` | SQLite database file path |
 | `-bootstrap` | | Specific peer to bootstrap from |
 
