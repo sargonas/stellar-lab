@@ -283,6 +283,13 @@ func (g *StellarTransport) sendMessage(address string, msg TransportMessage) err
 
 	// Check if we were rejected
 	if resp.StatusCode != http.StatusOK {
+		// Try to read the reason from response body
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error != "" {
+			return fmt.Errorf("rejected: %s", errResp.Error)
+		}
 		return fmt.Errorf("rejected with status %d", resp.StatusCode)
 	}
 
