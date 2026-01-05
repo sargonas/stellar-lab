@@ -1,204 +1,204 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"html/template"
-	"log"
-	"net"
-	"net/http"
+    "encoding/json"
+    "fmt"
+    "html/template"
+    "log"
+    "net"
+    "net/http"
 )
 
 // WebInterface handles the web UI and API endpoints
 type WebInterface struct {
-	dht      *DHT
-	storage  *Storage
-	addr     string
+    dht      *DHT
+    storage  *Storage
+    addr     string
 }
 
 // WebInterfaceData holds data for the web template
 type WebInterfaceData struct {
-	System            *System
-	Peers             []*System
-	PeerCount         int
-	MaxPeers          int
-	PeerCapacityDesc  string
-	KnownSystems      []*System
-	TotalSystems      int
-	ProtocolVersion   string
-	AttestationCount  int
-	DatabaseSize      string
-	NodeHealth        string
-	NodeHealthClass   string
-	RoutingTableSize  int
-	CacheSize         int
-	ActiveBuckets     int
+    System            *System
+    Peers             []*System
+    PeerCount         int
+    MaxPeers          int
+    PeerCapacityDesc  string
+    KnownSystems      []*System
+    TotalSystems      int
+    ProtocolVersion   string
+    AttestationCount  int
+    DatabaseSize      string
+    NodeHealth        string
+    NodeHealthClass   string
+    RoutingTableSize  int
+    CacheSize         int
+    ActiveBuckets     int
 }
 
 // NewWebInterface creates a new web interface
 func NewWebInterface(dht *DHT, storage *Storage, addr string) *WebInterface {
-	return &WebInterface{
-		dht:     dht,
-		storage: storage,
-		addr:    addr,
-	}
+    return &WebInterface{
+        dht:     dht,
+        storage: storage,
+        addr:    addr,
+    }
 }
 
 // Start begins the web server
 // Returns an error if the server fails to bind
 func (w *WebInterface) Start() error {
-	// Try to bind BEFORE starting goroutine
-	listener, err := net.Listen("tcp", w.addr)
-	if err != nil {
-		return fmt.Errorf("Web server failed to bind to %s: %w", w.addr, err)
-	}
+    // Try to bind BEFORE starting goroutine
+    listener, err := net.Listen("tcp", w.addr)
+    if err != nil {
+        return fmt.Errorf("Web server failed to bind to %s: %w", w.addr, err)
+    }
 
-	mux := http.NewServeMux()
+    mux := http.NewServeMux()
 
-	// Web UI
-	mux.HandleFunc("/", w.handleIndex)
+    // Web UI
+    mux.HandleFunc("/", w.handleIndex)
 
-	// API endpoints
-	mux.HandleFunc("/api/system", w.handleSystemAPI)
-	mux.HandleFunc("/api/peers", w.handlePeersAPI)
-	mux.HandleFunc("/api/known-systems", w.handleKnownSystemsAPI)
-	mux.HandleFunc("/api/stats", w.handleStatsAPI)
+    // API endpoints
+    mux.HandleFunc("/api/system", w.handleSystemAPI)
+    mux.HandleFunc("/api/peers", w.handlePeersAPI)
+    mux.HandleFunc("/api/known-systems", w.handleKnownSystemsAPI)
+    mux.HandleFunc("/api/stats", w.handleStatsAPI)
 
-	log.Printf("Web interface listening on %s", w.addr)
-	go func() {
-		if err := http.Serve(listener, mux); err != nil {
-			log.Printf("Web server error: %v", err)
-		}
-	}()
+    log.Printf("Web interface listening on %s", w.addr)
+    go func() {
+        if err := http.Serve(listener, mux); err != nil {
+            log.Printf("Web server error: %v", err)
+        }
+    }()
 
-	return nil
+    return nil
 }
 
 // handleIndex serves the main web page
 func (w *WebInterface) handleIndex(rw http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(rw, r)
-		return
-	}
+    if r.URL.Path != "/" {
+        http.NotFound(rw, r)
+        return
+    }
 
-	data := w.buildTemplateData()
+    data := w.buildTemplateData()
 
-	tmpl := template.Must(template.New("index").Parse(indexTemplate))
-	if err := tmpl.Execute(rw, data); err != nil {
-		http.Error(rw, err.Error(), http.StatusInternalServerError)
-	}
+    tmpl := template.Must(template.New("index").Parse(indexTemplate))
+    if err := tmpl.Execute(rw, data); err != nil {
+        http.Error(rw, err.Error(), http.StatusInternalServerError)
+    }
 }
 
 // buildTemplateData gathers all data for the web template
 func (w *WebInterface) buildTemplateData() WebInterfaceData {
-	sys := w.dht.GetLocalSystem()
-	rt := w.dht.GetRoutingTable()
+    sys := w.dht.GetLocalSystem()
+    rt := w.dht.GetRoutingTable()
 
-	// Get routing table nodes (active peers)
-	peers := rt.GetAllRoutingTableNodes()
+    // Get routing table nodes (active peers)
+    peers := rt.GetAllRoutingTableNodes()
 
-	// Get all cached systems (known galaxy)
-	allSystems := rt.GetAllCachedSystems()
+    // Get all cached systems (known galaxy)
+    allSystems := rt.GetAllCachedSystems()
 
-	// Count active buckets
-	activeBuckets := 0
-	for i := 0; i < IDBits; i++ {
-		if len(rt.GetBucketNodes(i)) > 0 {
-			activeBuckets++
-		}
-	}
+    // Count active buckets
+    activeBuckets := 0
+    for i := 0; i < IDBits; i++ {
+        if len(rt.GetBucketNodes(i)) > 0 {
+            activeBuckets++
+        }
+    }
 
-	// Get attestation count (use GetDatabaseStats)
-	dbStats, _ := w.storage.GetDatabaseStats()
-	attestationCount := 0
-	if count, ok := dbStats["attestation_count"].(int); ok {
-		attestationCount = count
-	}
+    // Get attestation count (use GetDatabaseStats)
+    dbStats, _ := w.storage.GetDatabaseStats()
+    attestationCount := 0
+    if count, ok := dbStats["attestation_count"].(int); ok {
+        attestationCount = count
+    }
 
-	// Get database size
-	dbSizeStr := "unknown"
-	if size, ok := dbStats["database_size"].(string); ok {
-		dbSizeStr = size
-	}
+    // Get database size
+    dbSizeStr := "unknown"
+    if size, ok := dbStats["database_size"].(string); ok {
+        dbSizeStr = size
+    }
 
-	// Determine node health
-	rtSize := rt.GetRoutingTableSize()
-	var health, healthClass string
-	if rtSize >= 2 {
-		health = "Healthy"
-		healthClass = "health-healthy"
-	} else if rtSize == 1 {
-		health = "Low Connectivity"
-		healthClass = "health-warning"
-	} else {
-		health = "Isolated"
-		healthClass = "health-critical"
-	}
+    // Determine node health
+    rtSize := rt.GetRoutingTableSize()
+    var health, healthClass string
+    if rtSize >= 2 {
+        health = "Healthy"
+        healthClass = "health-healthy"
+    } else if rtSize == 1 {
+        health = "Low Connectivity"
+        healthClass = "health-warning"
+    } else {
+        health = "Isolated"
+        healthClass = "health-critical"
+    }
 
-	// Peer capacity description
-	capacityDesc := fmt.Sprintf("%s-class", sys.Stars.Primary.Class)
-	if sys.Stars.IsBinary {
-		capacityDesc = fmt.Sprintf("%s/%s binary", sys.Stars.Primary.Class, sys.Stars.Secondary.Class)
-	} else if sys.Stars.IsTrinary {
-		capacityDesc = "trinary system"
-	}
+    // Peer capacity description
+    capacityDesc := fmt.Sprintf("%s-class", sys.Stars.Primary.Class)
+    if sys.Stars.IsBinary {
+        capacityDesc = fmt.Sprintf("%s/%s binary", sys.Stars.Primary.Class, sys.Stars.Secondary.Class)
+    } else if sys.Stars.IsTrinary {
+        capacityDesc = "trinary system"
+    }
 
-	return WebInterfaceData{
-		System:           sys,
-		Peers:            peers,
-		PeerCount:        rtSize,
-		MaxPeers:         sys.GetMaxPeers(),
-		PeerCapacityDesc: capacityDesc,
-		KnownSystems:     allSystems,
-		TotalSystems:     len(allSystems) + 1, // +1 for self
-		ProtocolVersion:  CurrentProtocolVersion.String(),
-		AttestationCount: attestationCount,
-		DatabaseSize:     dbSizeStr,
-		NodeHealth:       health,
-		NodeHealthClass:  healthClass,
-		RoutingTableSize: rtSize,
-		CacheSize:        rt.GetCacheSize(),
-		ActiveBuckets:    activeBuckets,
-	}
+    return WebInterfaceData{
+        System:           sys,
+        Peers:            peers,
+        PeerCount:        rtSize,
+        MaxPeers:         sys.GetMaxPeers(),
+        PeerCapacityDesc: capacityDesc,
+        KnownSystems:     allSystems,
+        TotalSystems:     len(allSystems) + 1, // +1 for self
+        ProtocolVersion:  CurrentProtocolVersion.String(),
+        AttestationCount: attestationCount,
+        DatabaseSize:     dbSizeStr,
+        NodeHealth:       health,
+        NodeHealthClass:  healthClass,
+        RoutingTableSize: rtSize,
+        CacheSize:        rt.GetCacheSize(),
+        ActiveBuckets:    activeBuckets,
+    }
 }
 
 // API handlers
 
 func (w *WebInterface) handleSystemAPI(rw http.ResponseWriter, r *http.Request) {
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(w.dht.GetLocalSystem())
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(w.dht.GetLocalSystem())
 }
 
 func (w *WebInterface) handlePeersAPI(rw http.ResponseWriter, r *http.Request) {
-	peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(peers)
+    peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(peers)
 }
 
 func (w *WebInterface) handleKnownSystemsAPI(rw http.ResponseWriter, r *http.Request) {
-	systems := w.dht.GetRoutingTable().GetAllCachedSystems()
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(systems)
+    systems := w.dht.GetRoutingTable().GetAllCachedSystems()
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(systems)
 }
 
 func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
-	stats := w.dht.GetNetworkStats()
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(stats)
+    stats := w.dht.GetNetworkStats()
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(stats)
 }
 
 // formatBytes formats a byte count as a human-readable string
 func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+    const unit = 1024
+    if bytes < unit {
+        return fmt.Sprintf("%d B", bytes)
+    }
+    div, exp := int64(unit), 0
+    for n := bytes / unit; n >= unit; n /= unit {
+        div *= unit
+        exp++
+    }
+    return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // HTML template
@@ -297,6 +297,18 @@ const indexTemplate = `<!DOCTYPE html>
             height: 12px;
             box-shadow: 0 0 10px #60a5fa;
             z-index: 10;
+        }
+        .map-label {
+            position: absolute;
+            transform: translateX(-50%);
+            font-size: 11px;
+            color: #888;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        .map-label.self {
+            color: #60a5fa;
+            font-weight: 500;
         }
         .version-badge {
             display: inline-block;
@@ -411,14 +423,16 @@ const indexTemplate = `<!DOCTYPE html>
             color: "{{.System.Stars.Primary.Color}}"
         };
 
+        // Map state for pan/zoom
+        let mapState = { panX: 0, panY: 0, zoom: 1, dragging: false, lastX: 0, lastY: 0 };
+
         function renderGalaxyMap() {
             const map = document.getElementById('galaxy-map');
             if (!map) return;
-            
+
             const width = map.clientWidth;
             const height = map.clientHeight;
-            
-            // Don't render if container has no size yet
+
             if (width === 0 || height === 0) {
                 setTimeout(renderGalaxyMap, 100);
                 return;
@@ -427,63 +441,146 @@ const indexTemplate = `<!DOCTYPE html>
             const allSystems = [selfSystem, ...knownSystems];
             if (allSystems.length === 0) return;
 
-            let minX = Infinity, maxX = -Infinity;
-            let minY = Infinity, maxY = -Infinity;
+            // Check if all systems are at the same location
+            const allSameLocation = allSystems.every(s =>
+                Math.abs(s.x - selfSystem.x) < 1 && Math.abs(s.y - selfSystem.y) < 1
+            );
 
-            allSystems.forEach(s => {
-                if (s.x < minX) minX = s.x;
-                if (s.x > maxX) maxX = s.x;
-                if (s.y < minY) minY = s.y;
-                if (s.y > maxY) maxY = s.y;
-            });
+            // If all at same location, spread them in a circle for visibility
+            let displaySystems = allSystems.map((s, i) => ({...s}));
+            if (allSameLocation && allSystems.length > 1) {
+                displaySystems.forEach((s, i) => {
+                    if (i === 0) return; // Keep self at center
+                    const angle = ((i - 1) / (allSystems.length - 1)) * 2 * Math.PI;
+                    const radius = Math.min(width, height) * 0.3;
+                    s.displayX = width/2 + Math.cos(angle) * radius;
+                    s.displayY = height/2 + Math.sin(angle) * radius;
+                });
+                displaySystems[0].displayX = width/2;
+                displaySystems[0].displayY = height/2;
+            } else {
+                // Normal coordinate mapping
+                let minX = Infinity, maxX = -Infinity;
+                let minY = Infinity, maxY = -Infinity;
 
-            // Handle single system or systems at same location
-            let rangeX = maxX - minX;
-            let rangeY = maxY - minY;
-            
-            if (rangeX < 1) {
-                minX -= 500;
-                maxX += 500;
-                rangeX = 1000;
+                allSystems.forEach(s => {
+                    if (s.x < minX) minX = s.x;
+                    if (s.x > maxX) maxX = s.x;
+                    if (s.y < minY) minY = s.y;
+                    if (s.y > maxY) maxY = s.y;
+                });
+
+                let rangeX = maxX - minX || 1000;
+                let rangeY = maxY - minY || 1000;
+
+                if (rangeX < 100) { minX -= 500; maxX += 500; rangeX = maxX - minX; }
+                if (rangeY < 100) { minY -= 500; maxY += 500; rangeY = maxY - minY; }
+
+                const padX = rangeX * 0.15;
+                const padY = rangeY * 0.15;
+                minX -= padX; maxX += padX;
+                minY -= padY; maxY += padY;
+                rangeX = maxX - minX;
+                rangeY = maxY - minY;
+
+                displaySystems.forEach(s => {
+                    s.displayX = ((s.x - minX) / rangeX) * (width - 60) + 30;
+                    s.displayY = ((s.y - minY) / rangeY) * (height - 60) + 30;
+                });
             }
-            if (rangeY < 1) {
-                minY -= 500;
-                maxY += 500;
-                rangeY = 1000;
-            }
-
-            // Add padding
-            const padX = rangeX * 0.1;
-            const padY = rangeY * 0.1;
-            minX -= padX; maxX += padX;
-            minY -= padY; maxY += padY;
-            rangeX = maxX - minX;
-            rangeY = maxY - minY;
 
             map.innerHTML = '';
 
-            allSystems.forEach(s => {
-                const x = ((s.x - minX) / rangeX) * (width - 20) + 10;
-                const y = ((s.y - minY) / rangeY) * (height - 20) + 10;
+            // Create transformable container
+            const container = document.createElement('div');
+            container.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;';
+            container.style.transform = 'translate(' + mapState.panX + 'px,' + mapState.panY + 'px) scale(' + mapState.zoom + ')';
+            container.style.transformOrigin = 'center center';
 
+            displaySystems.forEach((s, idx) => {
+                const x = s.displayX;
+                const y = s.displayY;
+                const isSelf = s.id === selfSystem.id;
+
+                // Star dot
                 const dot = document.createElement('div');
-                dot.className = 'map-dot' + (s.id === selfSystem.id ? ' self' : '');
+                dot.className = 'map-dot' + (isSelf ? ' self' : '');
                 dot.style.left = x + 'px';
                 dot.style.top = y + 'px';
                 dot.style.background = s.color || '#60a5fa';
-                dot.title = s.name + '\n(' + s.x.toFixed(0) + ', ' + s.y.toFixed(0) + ', ' + s.z.toFixed(0) + ')';
-                map.appendChild(dot);
+                dot.title = s.name + '\n(' + allSystems[idx].x.toFixed(1) + ', ' + allSystems[idx].y.toFixed(1) + ', ' + allSystems[idx].z.toFixed(1) + ')';
+                container.appendChild(dot);
+
+                // Label
+                const label = document.createElement('div');
+                label.className = 'map-label' + (isSelf ? ' self' : '');
+                label.style.left = x + 'px';
+                label.style.top = (y + 12) + 'px';
+                label.textContent = s.name;
+                container.appendChild(label);
             });
+
+            map.appendChild(container);
+
+            // Hint
+            const hint = document.createElement('div');
+            hint.style.cssText = 'position:absolute;bottom:8px;right:12px;font-size:11px;color:#666;';
+            hint.textContent = allSameLocation && allSystems.length > 1
+                ? '⚠ All at (0,0,0) - shown in circle'
+                : 'Drag to pan • Scroll to zoom';
+            map.appendChild(hint);
         }
 
-        // Wait for DOM and layout to be ready
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', renderGalaxyMap);
-        } else {
-            setTimeout(renderGalaxyMap, 50);
-        }
-        window.addEventListener('resize', renderGalaxyMap);
-        setTimeout(() => location.reload(), 30000);
+        // Pan/zoom event handlers
+        document.addEventListener('DOMContentLoaded', function() {
+            const mapEl = document.getElementById('galaxy-map');
+            if (!mapEl) return;
+
+            mapEl.style.cursor = 'grab';
+
+            mapEl.addEventListener('mousedown', function(e) {
+                mapState.dragging = true;
+                mapState.lastX = e.clientX;
+                mapState.lastY = e.clientY;
+                mapEl.style.cursor = 'grabbing';
+            });
+
+            mapEl.addEventListener('mousemove', function(e) {
+                if (!mapState.dragging) return;
+                mapState.panX += e.clientX - mapState.lastX;
+                mapState.panY += e.clientY - mapState.lastY;
+                mapState.lastX = e.clientX;
+                mapState.lastY = e.clientY;
+                renderGalaxyMap();
+            });
+
+            mapEl.addEventListener('mouseup', function() {
+                mapState.dragging = false;
+                mapEl.style.cursor = 'grab';
+            });
+
+            mapEl.addEventListener('mouseleave', function() {
+                mapState.dragging = false;
+                mapEl.style.cursor = 'grab';
+            });
+
+            mapEl.addEventListener('wheel', function(e) {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                mapState.zoom = Math.max(0.5, Math.min(5, mapState.zoom * delta));
+                renderGalaxyMap();
+            });
+
+            renderGalaxyMap();
+        });
+
+        window.addEventListener('resize', function() {
+            mapState.panX = 0;
+            mapState.panY = 0;
+            mapState.zoom = 1;
+            renderGalaxyMap();
+        });
+        setTimeout(function() { location.reload(); }, 30000);
     </script>
 </body>
 </html>`
