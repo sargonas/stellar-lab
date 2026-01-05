@@ -208,7 +208,7 @@ func scheduleCompaction(storage *Storage) {
 
 		for {
 			log.Printf("Running attestation compaction...")
-			if err := storage.CompactAttestations(); err != nil {
+			if _, err := storage.CompactAttestations(7); err != nil {
 				log.Printf("Compaction error: %v", err)
 			} else {
 				log.Printf("Compaction complete")

@@ -1,186 +1,192 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"html/template"
-	"log"
-	"net/http"
+    "encoding/json"
+    "fmt"
+    "html/template"
+    "log"
+    "net/http"
 )
 
 // WebInterface handles the web UI and API endpoints
 type WebInterface struct {
-	dht      *DHT
-	storage  *Storage
-	addr     string
+    dht      *DHT
+    storage  *Storage
+    addr     string
 }
 
 // WebInterfaceData holds data for the web template
 type WebInterfaceData struct {
-	System            *System
-	Peers             []*System
-	PeerCount         int
-	MaxPeers          int
-	PeerCapacityDesc  string
-	KnownSystems      []*System
-	TotalSystems      int
-	ProtocolVersion   string
-	AttestationCount  int
-	DatabaseSize      string
-	NodeHealth        string
-	NodeHealthClass   string
-	RoutingTableSize  int
-	CacheSize         int
-	ActiveBuckets     int
+    System            *System
+    Peers             []*System
+    PeerCount         int
+    MaxPeers          int
+    PeerCapacityDesc  string
+    KnownSystems      []*System
+    TotalSystems      int
+    ProtocolVersion   string
+    AttestationCount  int
+    DatabaseSize      string
+    NodeHealth        string
+    NodeHealthClass   string
+    RoutingTableSize  int
+    CacheSize         int
+    ActiveBuckets     int
 }
 
 // NewWebInterface creates a new web interface
 func NewWebInterface(dht *DHT, storage *Storage, addr string) *WebInterface {
-	return &WebInterface{
-		dht:     dht,
-		storage: storage,
-		addr:    addr,
-	}
+    return &WebInterface{
+        dht:     dht,
+        storage: storage,
+        addr:    addr,
+    }
 }
 
 // Start begins the web server
 func (w *WebInterface) Start() {
-	mux := http.NewServeMux()
+    mux := http.NewServeMux()
 
-	// Web UI
-	mux.HandleFunc("/", w.handleIndex)
+    // Web UI
+    mux.HandleFunc("/", w.handleIndex)
 
-	// API endpoints
-	mux.HandleFunc("/api/system", w.handleSystemAPI)
-	mux.HandleFunc("/api/peers", w.handlePeersAPI)
-	mux.HandleFunc("/api/known-systems", w.handleKnownSystemsAPI)
-	mux.HandleFunc("/api/stats", w.handleStatsAPI)
+    // API endpoints
+    mux.HandleFunc("/api/system", w.handleSystemAPI)
+    mux.HandleFunc("/api/peers", w.handlePeersAPI)
+    mux.HandleFunc("/api/known-systems", w.handleKnownSystemsAPI)
+    mux.HandleFunc("/api/stats", w.handleStatsAPI)
 
-	log.Printf("Web interface listening on %s", w.addr)
-	if err := http.ListenAndServe(w.addr, mux); err != nil {
-		log.Printf("Web server error: %v", err)
-	}
+    log.Printf("Web interface listening on %s", w.addr)
+    if err := http.ListenAndServe(w.addr, mux); err != nil {
+        log.Printf("Web server error: %v", err)
+    }
 }
 
 // handleIndex serves the main web page
 func (w *WebInterface) handleIndex(rw http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(rw, r)
-		return
-	}
+    if r.URL.Path != "/" {
+        http.NotFound(rw, r)
+        return
+    }
 
-	data := w.buildTemplateData()
+    data := w.buildTemplateData()
 
-	tmpl := template.Must(template.New("index").Parse(indexTemplate))
-	if err := tmpl.Execute(rw, data); err != nil {
-		http.Error(rw, err.Error(), http.StatusInternalServerError)
-	}
+    tmpl := template.Must(template.New("index").Parse(indexTemplate))
+    if err := tmpl.Execute(rw, data); err != nil {
+        http.Error(rw, err.Error(), http.StatusInternalServerError)
+    }
 }
 
 // buildTemplateData gathers all data for the web template
 func (w *WebInterface) buildTemplateData() WebInterfaceData {
-	sys := w.dht.GetLocalSystem()
-	rt := w.dht.GetRoutingTable()
+    sys := w.dht.GetLocalSystem()
+    rt := w.dht.GetRoutingTable()
 
-	// Get routing table nodes (active peers)
-	peers := rt.GetAllRoutingTableNodes()
+    // Get routing table nodes (active peers)
+    peers := rt.GetAllRoutingTableNodes()
 
-	// Get all cached systems (known galaxy)
-	allSystems := rt.GetAllCachedSystems()
+    // Get all cached systems (known galaxy)
+    allSystems := rt.GetAllCachedSystems()
 
-	// Count active buckets
-	activeBuckets := 0
-	for i := 0; i < IDBits; i++ {
-		if len(rt.GetBucketNodes(i)) > 0 {
-			activeBuckets++
-		}
-	}
+    // Count active buckets
+    activeBuckets := 0
+    for i := 0; i < IDBits; i++ {
+        if len(rt.GetBucketNodes(i)) > 0 {
+            activeBuckets++
+        }
+    }
 
-	// Get attestation count
-	attestationCount := w.storage.CountAttestations()
+    // Get attestation count (use GetDatabaseStats)
+    dbStats, _ := w.storage.GetDatabaseStats()
+    attestationCount := 0
+    if count, ok := dbStats["attestation_count"].(int); ok {
+        attestationCount = count
+    }
 
-	// Get database size
-	dbSize := w.storage.GetDatabaseSize()
-	dbSizeStr := formatBytes(dbSize)
+    // Get database size
+    dbSizeStr := "unknown"
+    if size, ok := dbStats["database_size"].(string); ok {
+        dbSizeStr = size
+    }
 
-	// Determine node health
-	rtSize := rt.GetRoutingTableSize()
-	var health, healthClass string
-	if rtSize >= 2 {
-		health = "Healthy"
-		healthClass = "health-healthy"
-	} else if rtSize == 1 {
-		health = "Low Connectivity"
-		healthClass = "health-warning"
-	} else {
-		health = "Isolated"
-		healthClass = "health-critical"
-	}
+    // Determine node health
+    rtSize := rt.GetRoutingTableSize()
+    var health, healthClass string
+    if rtSize >= 2 {
+        health = "Healthy"
+        healthClass = "health-healthy"
+    } else if rtSize == 1 {
+        health = "Low Connectivity"
+        healthClass = "health-warning"
+    } else {
+        health = "Isolated"
+        healthClass = "health-critical"
+    }
 
-	// Peer capacity description
-	capacityDesc := fmt.Sprintf("%s-class", sys.Stars.Primary.Class)
-	if sys.Stars.IsBinary {
-		capacityDesc = fmt.Sprintf("%s/%s binary", sys.Stars.Primary.Class, sys.Stars.Secondary.Class)
-	} else if sys.Stars.IsTrinary {
-		capacityDesc = "trinary system"
-	}
+    // Peer capacity description
+    capacityDesc := fmt.Sprintf("%s-class", sys.Stars.Primary.Class)
+    if sys.Stars.IsBinary {
+        capacityDesc = fmt.Sprintf("%s/%s binary", sys.Stars.Primary.Class, sys.Stars.Secondary.Class)
+    } else if sys.Stars.IsTrinary {
+        capacityDesc = "trinary system"
+    }
 
-	return WebInterfaceData{
-		System:           sys,
-		Peers:            peers,
-		PeerCount:        rtSize,
-		MaxPeers:         sys.GetMaxPeers(),
-		PeerCapacityDesc: capacityDesc,
-		KnownSystems:     allSystems,
-		TotalSystems:     len(allSystems) + 1, // +1 for self
-		ProtocolVersion:  CurrentProtocolVersion.String(),
-		AttestationCount: attestationCount,
-		DatabaseSize:     dbSizeStr,
-		NodeHealth:       health,
-		NodeHealthClass:  healthClass,
-		RoutingTableSize: rtSize,
-		CacheSize:        rt.GetCacheSize(),
-		ActiveBuckets:    activeBuckets,
-	}
+    return WebInterfaceData{
+        System:           sys,
+        Peers:            peers,
+        PeerCount:        rtSize,
+        MaxPeers:         sys.GetMaxPeers(),
+        PeerCapacityDesc: capacityDesc,
+        KnownSystems:     allSystems,
+        TotalSystems:     len(allSystems) + 1, // +1 for self
+        ProtocolVersion:  CurrentProtocolVersion.String(),
+        AttestationCount: attestationCount,
+        DatabaseSize:     dbSizeStr,
+        NodeHealth:       health,
+        NodeHealthClass:  healthClass,
+        RoutingTableSize: rtSize,
+        CacheSize:        rt.GetCacheSize(),
+        ActiveBuckets:    activeBuckets,
+    }
 }
 
 // API handlers
 
 func (w *WebInterface) handleSystemAPI(rw http.ResponseWriter, r *http.Request) {
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(w.dht.GetLocalSystem())
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(w.dht.GetLocalSystem())
 }
 
 func (w *WebInterface) handlePeersAPI(rw http.ResponseWriter, r *http.Request) {
-	peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(peers)
+    peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(peers)
 }
 
 func (w *WebInterface) handleKnownSystemsAPI(rw http.ResponseWriter, r *http.Request) {
-	systems := w.dht.GetRoutingTable().GetAllCachedSystems()
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(systems)
+    systems := w.dht.GetRoutingTable().GetAllCachedSystems()
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(systems)
 }
 
 func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
-	stats := w.dht.GetNetworkStats()
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(stats)
+    stats := w.dht.GetNetworkStats()
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(stats)
 }
 
 // formatBytes formats a byte count as a human-readable string
 func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+    const unit = 1024
+    if bytes < unit {
+        return fmt.Sprintf("%d B", bytes)
+    }
+    div, exp := int64(unit), 0
+    for n := bytes / unit; n >= unit; n /= unit {
+        div *= unit
+        exp++
+    }
+    return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // HTML template
