@@ -40,7 +40,7 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 			log.Printf("  Pinging cached peer: %s (%s)", peer.Name, peer.PeerAddress)
 			if _, err := dht.Ping(peer.PeerAddress); err != nil {
 				log.Printf("    Failed: %v", err)
-				dht.routingTable.RecordFailure(peer.ID)
+				dht.routingTable.MarkFailed(peer.ID)
 				continue
 			}
 			log.Printf("    Connected!")

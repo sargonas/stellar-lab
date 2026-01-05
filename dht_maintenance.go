@@ -67,7 +67,7 @@ func (dht *DHT) checkPeerLiveness() {
 
 		// Ping and announce in one go
 		if _, err := dht.Ping(sys.PeerAddress); err != nil {
-			dht.routingTable.RecordFailure(sys.ID)
+			dht.routingTable.MarkFailed(sys.ID)
 			dead++
 		} else {
 			dht.routingTable.MarkVerified(sys.ID)
