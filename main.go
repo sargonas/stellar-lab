@@ -79,6 +79,10 @@ func main() {
 		// Generate star system
 		system.GenerateMultiStarSystem()
 
+		// Generate coordinates (will be deterministic since no sponsor yet)
+		// Real coordinates get assigned during bootstrap when we find a sponsor
+		system.GenerateCoordinates(nil)
+
 		// Save to database
 		if err := storage.SaveSystem(system); err != nil {
 			log.Fatalf("Failed to save system: %v", err)
@@ -130,6 +134,18 @@ func main() {
 
 		if err := dht.Bootstrap(config); err != nil {
 			log.Printf("Bootstrap warning: %v", err)
+		}
+
+		// If this is a new node at origin (0,0,0), update coordinates near a peer
+		if system.X == 0 && system.Y == 0 && system.Z == 0 {
+			peers := dht.GetRoutingTable().GetAllRoutingTableNodes()
+			if len(peers) > 0 {
+				sponsor := peers[0]
+				log.Printf("Updating coordinates to cluster near %s", sponsor.Name)
+				system.GenerateCoordinates(sponsor)
+				storage.SaveSystem(system)
+				log.Printf("New coordinates: (%.2f, %.2f, %.2f)", system.X, system.Y, system.Z)
+			}
 		}
 	}()
 
