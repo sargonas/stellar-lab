@@ -75,7 +75,7 @@ func (g *StellarTransport) Start() {
 	}()
 
 	// Periodic gossip with random peers
-	go g.gossipLoop(30 * time.Second)
+	go g.gossipLoop(60 * time.Second)
 
 	// Periodic peer list exchange
 	go g.peerExchangeLoop(60 * time.Second)
@@ -84,7 +84,7 @@ func (g *StellarTransport) Start() {
 	go g.cleanupLoop(5 * time.Minute)
 
 	// Ensure minimum peer connectivity
-	go g.ensureMinimumPeers(30*time.Second, 2)
+	go g.ensureMinimumPeers(60*time.Second, 2)
 }
 
 // gossipLoop periodically sends heartbeats to random peers
