@@ -82,6 +82,9 @@ func (g *StellarTransport) Start() {
 
 	// Periodic cleanup of dead peers
 	go g.cleanupLoop(5 * time.Minute)
+
+	// Ensure minimum peer connectivity
+	go g.ensureMinimumPeers(30*time.Second, 2)
 }
 
 // gossipLoop periodically sends heartbeats to random peers
@@ -214,6 +217,11 @@ func (g *StellarTransport) sendHeartbeat(peer *Peer) error {
 	return g.sendMessage(peer.Address, msg)
 }
 
+// SendHeartbeatTo sends a heartbeat to a specific peer and returns error if rejected
+func (g *StellarTransport) SendHeartbeatTo(peer *Peer) error {
+	return g.sendHeartbeat(peer)
+}
+
 // exchangePeers exchanges peer lists with another node
 // Attestations are MANDATORY in v1.0.0+
 func (g *StellarTransport) exchangePeers(peer *Peer) error {
@@ -253,6 +261,7 @@ func (g *StellarTransport) exchangePeers(peer *Peer) error {
 }
 
 // sendMessage sends a transport protocol message to an address
+// Returns an error if the message was rejected (e.g., peer at capacity)
 func (g *StellarTransport) sendMessage(address string, msg TransportMessage) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -265,6 +274,11 @@ func (g *StellarTransport) sendMessage(address string, msg TransportMessage) err
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Check if we were rejected
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("rejected with status %d", resp.StatusCode)
+	}
 
 	return nil
 }
@@ -437,6 +451,80 @@ func (g *StellarTransport) GetRandomPeerSystem() *System {
 	// For now, just return nil - we'd need to fetch the peer's system info
 	// This is a placeholder for future enhancement where we cache peer system info
 	return nil
+}
+
+// ensureMinimumPeers periodically checks if we have enough peers and tries to find more
+func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers int) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		g.mu.RLock()
+		peerCount := len(g.peers)
+		g.mu.RUnlock()
+
+		if peerCount < minPeers {
+			log.Printf("Only %d peers (minimum: %d), attempting to discover more...", peerCount, minPeers)
+
+			// Get all known peer systems from cache and try to connect
+			allSystems, err := g.storage.GetAllPeerSystems()
+			if err != nil {
+				continue
+			}
+
+			for _, sys := range allSystems {
+				// Skip ourselves
+				if sys.ID == g.localSystem.ID {
+					continue
+				}
+
+				// Skip if already a peer
+				g.mu.RLock()
+				_, exists := g.peers[sys.ID]
+				currentCount := len(g.peers)
+				g.mu.RUnlock()
+
+				if exists || currentCount >= MaxPeers {
+					continue
+				}
+
+				// Skip if no peer address
+				if sys.PeerAddress == "" {
+					continue
+				}
+
+				// Try to connect
+				log.Printf("Attempting connection to %s (%s)", sys.Name, sys.PeerAddress)
+				tempPeer := &Peer{
+					SystemID:   sys.ID,
+					Address:    sys.PeerAddress,
+					LastSeenAt: time.Now(),
+				}
+
+				if err := g.sendHeartbeat(tempPeer); err != nil {
+					log.Printf("  Connection failed: %v", err)
+					continue
+				}
+
+				// Success - add peer
+				g.mu.Lock()
+				if _, exists := g.peers[sys.ID]; !exists && len(g.peers) < MaxPeers {
+					g.peers[sys.ID] = tempPeer
+					g.storage.SavePeer(tempPeer)
+					log.Printf("  Successfully connected to %s", sys.Name)
+				}
+				g.mu.Unlock()
+
+				// Check if we have enough now
+				g.mu.RLock()
+				if len(g.peers) >= minPeers {
+					g.mu.RUnlock()
+					break
+				}
+				g.mu.RUnlock()
+			}
+		}
+	}
 }
 
 func min(a, b int) int {

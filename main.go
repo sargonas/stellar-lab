@@ -489,8 +489,25 @@ func main() {
 	// Connect to sponsor peer if we have one
 	if sponsorPeerAddress != "" && nearbySystem != nil {
 		log.Printf("Connecting to sponsor peer: %s", sponsorPeerAddress)
-		if err := transport.AddPeer(nearbySystem.ID, sponsorPeerAddress); err != nil {
-			log.Printf("Warning: Failed to add sponsor peer: %v", err)
+
+		// Try to send a heartbeat to verify connection is accepted
+		tempPeer := &Peer{
+			SystemID:   nearbySystem.ID,
+			Address:    sponsorPeerAddress,
+			LastSeenAt: time.Now(),
+		}
+
+		if err := transport.SendHeartbeatTo(tempPeer); err != nil {
+			log.Printf("Sponsor peer rejected connection: %v", err)
+			log.Printf("Will discover other peers via gossip...")
+			// Don't add the peer - wait to discover others
+		} else {
+			// Connection accepted, add the peer
+			if err := transport.AddPeer(nearbySystem.ID, sponsorPeerAddress); err != nil {
+				log.Printf("Warning: Failed to add sponsor peer: %v", err)
+			} else {
+				log.Printf("Successfully connected to sponsor")
+			}
 		}
 	}
 
