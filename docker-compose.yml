@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   stellar-mesh:
     image: ghcr.io/sargonas/stellar-lab:latest
