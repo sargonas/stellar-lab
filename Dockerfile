@@ -32,6 +32,5 @@ RUN mkdir -p /data
 # Expose ports
 EXPOSE 8080 7867
 
-# Default command
+# Default entrypoint - all config via env vars or CLI args
 ENTRYPOINT ["/app/stellar-mesh"]
-CMD ["-db", "/data/stellar-mesh.db"]
