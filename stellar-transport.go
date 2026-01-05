@@ -350,13 +350,41 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 				continue
 			}
 
-			g.mu.Lock()
-			if _, exists := g.peers[peer.SystemID]; !exists {
-				peer.LastSeenAt = time.Now()
-				g.peers[peer.SystemID] = peer
-				g.storage.SavePeer(peer)
+			g.mu.RLock()
+			_, exists := g.peers[peer.SystemID]
+			peerCount := len(g.peers)
+			g.mu.RUnlock()
+
+			if !exists && peerCount < MaxPeers {
+				// Reach out to this new peer to establish bidirectional connection
+				log.Printf("Discovered new peer %s via exchange, attempting connection to %s",
+					peer.SystemID.String()[:8], peer.Address)
+
+				newPeer := &Peer{
+					SystemID:   peer.SystemID,
+					Address:    peer.Address,
+					LastSeenAt: time.Now(),
+				}
+
+				// Try to connect in background
+				go func(p *Peer) {
+					if err := g.sendHeartbeat(p); err != nil {
+						log.Printf("Failed to connect to discovered peer %s: %v",
+							p.SystemID.String()[:8], err)
+						return
+					}
+
+					// Connection succeeded, add to our peer list
+					g.mu.Lock()
+					if _, exists := g.peers[p.SystemID]; !exists && len(g.peers) < MaxPeers {
+						g.peers[p.SystemID] = p
+						g.storage.SavePeer(p)
+						log.Printf("Successfully connected to discovered peer %s",
+							p.SystemID.String()[:8])
+					}
+					g.mu.Unlock()
+				}(newPeer)
 			}
-			g.mu.Unlock()
 		}
 	}
 
