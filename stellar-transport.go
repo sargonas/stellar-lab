@@ -75,7 +75,8 @@ func (g *StellarTransport) Start() {
 	}()
 
 	// Periodic gossip with random peers
-	go g.gossipLoop(30 * time.Second)
+	// Periodic heartbeats to random peers (60s standard network-wide interval)
+	go g.gossipLoop(60 * time.Second)
 
 	// Periodic peer list exchange
 	go g.peerExchangeLoop(60 * time.Second)
@@ -84,7 +85,7 @@ func (g *StellarTransport) Start() {
 	go g.cleanupLoop(5 * time.Minute)
 
 	// Ensure minimum peer connectivity
-	go g.ensureMinimumPeers(30*time.Second, 2)
+	go g.ensureMinimumPeers(60*time.Second, 2)
 }
 
 // gossipLoop periodically sends heartbeats to random peers
@@ -335,10 +336,11 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 		peerCount := len(g.peers)
 		g.mu.RUnlock()
 
-		if !existingPeer && peerCount >= MaxPeers {
+		if !existingPeer && peerCount >= g.localSystem.GetMaxPeers() {
+			maxPeers := g.localSystem.GetMaxPeers()
 			log.Printf("Rejecting new peer %s (%s) - at max capacity (%d/%d)",
-				msg.System.ID, msg.System.Name, peerCount, MaxPeers)
-			return fmt.Errorf("peer at max capacity")
+				msg.System.ID, msg.System.Name, peerCount, maxPeers)
+			return fmt.Errorf("at max capacity (%d/%d)", peerCount, maxPeers)
 		}
 	}
 
@@ -381,7 +383,7 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 			peerCount := len(g.peers)
 			g.mu.RUnlock()
 
-			if !exists && peerCount < MaxPeers {
+			if !exists && peerCount < g.localSystem.GetMaxPeers() {
 				// Reach out to this new peer to establish bidirectional connection
 				log.Printf("Discovered new peer %s via exchange, attempting connection to %s",
 					peer.SystemID.String()[:8], peer.Address)
@@ -402,7 +404,7 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 
 					// Connection succeeded, add to our peer list
 					g.mu.Lock()
-					if _, exists := g.peers[p.SystemID]; !exists && len(g.peers) < MaxPeers {
+					if _, exists := g.peers[p.SystemID]; !exists && len(g.peers) < g.localSystem.GetMaxPeers() {
 						g.peers[p.SystemID] = p
 						g.storage.SavePeer(p)
 						log.Printf("Successfully connected to discovered peer %s",
@@ -420,19 +422,25 @@ func (g *StellarTransport) HandleMessage(msg TransportMessage) error {
 // HandleIncomingMessage handles HTTP requests from peers
 func (g *StellarTransport) HandleIncomingMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
 		return
 	}
 
 	var msg TransportMessage
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, "Invalid message", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid message"})
 		return
 	}
 
 	// Process the message using existing HandleMessage logic
 	if err := g.HandleMessage(msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -496,7 +504,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 				currentCount := len(g.peers)
 				g.mu.RUnlock()
 
-				if exists || currentCount >= MaxPeers {
+				if exists || currentCount >= g.localSystem.GetMaxPeers() {
 					continue
 				}
 
@@ -520,7 +528,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 
 				// Success - add peer
 				g.mu.Lock()
-				if _, exists := g.peers[sys.ID]; !exists && len(g.peers) < MaxPeers {
+				if _, exists := g.peers[sys.ID]; !exists && len(g.peers) < g.localSystem.GetMaxPeers() {
 					g.peers[sys.ID] = tempPeer
 					g.storage.SavePeer(tempPeer)
 					log.Printf("  Successfully connected to %s", sys.Name)
@@ -568,7 +576,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 						currentCount := len(g.peers)
 						g.mu.RUnlock()
 
-						if exists || currentCount >= MaxPeers {
+						if exists || currentCount >= g.localSystem.GetMaxPeers() {
 							continue
 						}
 
@@ -585,7 +593,7 @@ func (g *StellarTransport) ensureMinimumPeers(interval time.Duration, minPeers i
 						}
 
 						g.mu.Lock()
-						if _, exists := g.peers[tempPeer.SystemID]; !exists && len(g.peers) < MaxPeers {
+						if _, exists := g.peers[tempPeer.SystemID]; !exists && len(g.peers) < g.localSystem.GetMaxPeers() {
 							g.peers[tempPeer.SystemID] = tempPeer
 							g.storage.SavePeer(tempPeer)
 							log.Printf("  Successfully connected to %s", sys.Name)
@@ -640,7 +648,7 @@ func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Re
 
     // Add self (only if we have capacity)
     selfDist := math.Sqrt(g.localSystem.X*g.localSystem.X + g.localSystem.Y*g.localSystem.Y + g.localSystem.Z*g.localSystem.Z)
-    selfHasCapacity := selfPeerCount < MaxPeers
+    selfHasCapacity := selfPeerCount < g.localSystem.GetMaxPeers()
 
     systems = append(systems, DiscoverySystem{
         ID:                 g.localSystem.ID.String(),
@@ -651,7 +659,7 @@ func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Re
         PeerAddress:        g.localSystem.PeerAddress,
         DistanceFromOrigin: selfDist,
         CurrentPeers:       selfPeerCount,
-        MaxPeers:           MaxPeers,
+        MaxPeers:           g.localSystem.GetMaxPeers(),
         HasCapacity:        selfHasCapacity,
     })
 
@@ -674,7 +682,7 @@ func (g *StellarTransport) HandleDiscoveryInfo(w http.ResponseWriter, r *http.Re
             PeerAddress:        peer.Address,
             DistanceFromOrigin: dist,
             CurrentPeers:       -1,   // Unknown
-            MaxPeers:           MaxPeers,
+            MaxPeers:           peerSys.GetMaxPeers(),
             HasCapacity:        true, // Assume yes, will be rejected if not
         })
     }
