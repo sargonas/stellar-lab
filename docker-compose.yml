@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  stellar-mesh:
+    image: ghcr.io/sargonas/stellar-lab:latest
+    container_name: stellar-mesh
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Web UI
+      - "7867:7867"   # DHT Protocol
+    volumes:
+      - stellar-data:/data
+    environment:
+      - STELLAR_NAME=MyStarSystem
+      - STELLAR_PUBLIC_ADDRESS=your-domain.com:7867
+      # Optional:
+      # - STELLAR_DB=/data/stellar-mesh.db
+      # - STELLAR_ADDRESS=0.0.0.0:8080
+      # - STELLAR_BOOTSTRAP=seed-node.com:7867
+
+volumes:
+  stellar-data:

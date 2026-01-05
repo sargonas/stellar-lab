@@ -15,21 +15,21 @@ import (
 )
 
 func main() {
-	// Parse command line flags
-	name := flag.String("name", "", "Name for this star system")
-	seed := flag.String("seed", "", "Seed for deterministic UUID generation (optional)")
-	dbPath := flag.String("db", "stellar-mesh.db", "Path to SQLite database")
-	address := flag.String("address", "0.0.0.0:8080", "Address to bind web UI server (host:port)")
-	publicAddr := flag.String("public-address", "", "Public address for peer connections (host:port)")
-	bootstrapPeer := flag.String("bootstrap", "", "Bootstrap peer address (host:port)")
+	// Parse command line flags (CLI args override environment variables)
+	name := flag.String("name", getEnv("STELLAR_NAME", ""), "Name for this star system")
+	seed := flag.String("seed", getEnv("STELLAR_SEED", ""), "Seed for deterministic UUID generation (optional)")
+	dbPath := flag.String("db", getEnv("STELLAR_DB", "/data/stellar-mesh.db"), "Path to SQLite database")
+	address := flag.String("address", getEnv("STELLAR_ADDRESS", "0.0.0.0:8080"), "Address to bind web UI server (host:port)")
+	publicAddr := flag.String("public-address", getEnv("STELLAR_PUBLIC_ADDRESS", ""), "Public address for peer connections (host:port)")
+	bootstrapPeer := flag.String("bootstrap", getEnv("STELLAR_BOOTSTRAP", ""), "Bootstrap peer address (host:port)")
 	flag.Parse()
 
 	// Validate required flags
 	if *name == "" {
-		log.Fatal("Error: -name flag is required")
+		log.Fatal("Error: -name or STELLAR_NAME is required")
 	}
 	if *publicAddr == "" {
-		log.Fatal("Error: -public-address flag is required (e.g., -public-address \"myhost.com:7867\")")
+		log.Fatal("Error: -public-address or STELLAR_PUBLIC_ADDRESS is required (e.g., \"myhost.com:7867\")")
 	}
 
 	peerAddr := *publicAddr
@@ -257,4 +257,12 @@ func scheduleCompaction(storage *Storage) {
 			<-ticker.C
 		}
 	}()
+}
+
+// getEnv returns environment variable value or default if not set
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }

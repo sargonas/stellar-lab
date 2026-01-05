@@ -117,16 +117,20 @@ When testing locally, you can run multiple nodes from one install base by specif
   -public-address "localhost:7869" -address "0.0.0.0:8082" -db "beta.db"
 ```
 
-## Command-Line Flags
+## Configuration
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-name` | (required) | Name of your star system |
-| `-public-address` | (required) | Public address for peer connections (host:port) |
-| `-seed` | (random) | Seed for deterministic UUID generation in development |
-| `-address` | `0.0.0.0:8080` | Web UI bind address (host:port) |
-| `-db` | `stellar-mesh.db` | SQLite database file path |
-| `-bootstrap` | | Specific peer to bootstrap from |
+All settings can be configured via command-line flags or environment variables. CLI flags take precedence over environment variables.
+
+### Command-Line Flags
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `-name` | `STELLAR_NAME` | (required) | Name of your star system |
+| `-public-address` | `STELLAR_PUBLIC_ADDRESS` | (required) | Public address for peer connections (host:port) |
+| `-seed` | `STELLAR_SEED` | (random) | Seed for deterministic UUID generation in development |
+| `-address` | `STELLAR_ADDRESS` | `0.0.0.0:8080` | Web UI bind address (host:port) |
+| `-db` | `STELLAR_DB` | `/data/stellar-mesh.db` | SQLite database file path |
+| `-bootstrap` | `STELLAR_BOOTSTRAP` | | Specific peer to bootstrap from |
 
 ## Architecture
 
