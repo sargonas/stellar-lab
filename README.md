@@ -1,375 +1,385 @@
 # Stellar Mesh
 
-A lightweight, distributed mesh network where each node represents a star system in a shared galaxy.
+A decentralized peer-to-peer mesh network where each node represents a star system in a shared galaxy. Nodes discover each other organically, exchange cryptographically signed attestations to prove participation, and build verifiable reputation over time.
+
+## Overview
+
+Stellar Mesh creates a virtual galaxy where:
+- Each node is a **star system** with unique characteristics (star type, coordinates, binary/trinary composition)
+- Nodes connect to **peers** and exchange heartbeats to prove liveness
+- All interactions are secured with **Ed25519 cryptographic signatures**
+- Participation builds **verifiable reputation** that can be independently validated
+- The network topology is visualized as an interactive **3D galactic map**
 
 ## Features
 
+### Identity & Generation
 - **Unique Identity**: Each node gets a UUID (hardware-based, seed-based, or random)
-- **Multi-Star Systems**: Binary (40%) and trinary (10%) star systems with realistic composition
-- **Star Classification**: Each system has deterministic star types (O, B, A, F, G, K, M) with realistic distribution
-- **Spatial Clustering**: New nodes cluster near existing ones (100-500 units away) for organic galaxy growth
-- **Stellar Transport Protocol**: Automatic peer discovery and network maintenance (formerly "gossip")
-- **Network Reputation**: Earn points for uptime and being a critical network connector
-- **Low Resource**: Designed to run efficiently in Docker containers
-- **HTTP API**: Query system info, peers, stats, and reputation
-- **Persistent Storage**: SQLite for local data persistence
-- **Future-Proof**: UUID-based deterministic seed for generating system features
+- **Cryptographic Keys**: Ed25519 keypair for signing all network messages
+- **Multi-Star Systems**: Single (50%), Binary (40%), and trinary (10%) star systems with realistic composition
+- **Star Classification**: Deterministic star types (O, B, A, F, G, K, M) matching real galaxy distribution
+- **Spatial Clustering**: New nodes spawn 100-500 units from their sponsor, creating organic galaxy growth
+
+### Network Protocol
+- **Stellar Transport Protocol**: Automatic peer discovery and mesh maintenance
+- **Cryptographic Attestations**: Every message includes a signed proof of interaction
+- **Protocol Versioning**: Semantic versioning with compatibility negotiation
+- **Variable Peer Limits**: Star type determines max connections (M-class: 5 ranging to O-class: 12, +3 for binary, +5 for trinary)
+- **Attestation-Rate Normalization**: Larger hub nodes don't earn faster than small nodes
+
+### Reputation System
+- **Verifiable Reputation**: Score based on cryptographic attestation count
+- **Rank Progression**: Unranked → Bronze → Silver → Gold → Platinum → Diamond
+- **Independent Verification**: Any node can verify another's reputation proof
+- **No Central Authority**: Reputation is computed from attestations, not assigned
+
+### Visualization
+- **Web Dashboard**: Real-time system info, peer list, and reputation display
+- **2D Galaxy Map**: SVG-based map with multiple projection views (X-Y, X-Z, Y-Z)
+- **3D Galaxy Map**: Interactive Three.js visualization with orbit controls
+- **Topology View**: See actual mesh connections inferred from attestations
 
 ## Quick Start
 
 ### Prerequisites
 
-- Go 1.18 or higher
+- Go 1.21 or higher
 - GCC (for SQLite CGO compilation)
   - **macOS**: `xcode-select --install`
-  - **Linux**: `sudo apt-get install build-essential` (Ubuntu/Debian)
+  - **Linux**: `sudo apt-get install build-essential`
   - **Windows**: Install MinGW or use WSL
 
-### Development Setup
+### Build
 
 ```bash
-# Clone or extract the repository
+git clone https://github.com/your-org/stellar-mesh
 cd stellar-mesh
-
-# Download dependencies and create go.sum
 go mod tidy
-
-# Build the binary
 go build -o stellar-mesh
 ```
 
 ### Run Your First Node
 
 ```bash
-./stellar-mesh -name "Sol System" -address "localhost:8080"
+./stellar-mesh -name "Sol" -port 8080 -peer-port 7867
 ```
 
 Visit http://localhost:8080 to see the web interface.
 
-### Joining the Network
+### Join the Network
 
-**Automatic Discovery (recommended for public nodes):**
-
+**Automatic Discovery (recommended):**
 ```bash
-# Just run - automatically discovers peers via seed nodes
-./stellar-mesh -name "My System"
+./stellar-mesh -name "Alpha Centauri" -port 8081 -peer-port 7868
 ```
 
-The node will automatically connect to available seed nodes and discover the network.
+The node automatically discovers peers via seed nodes listed in `SEED-NODES.txt`.
 
 **Manual Bootstrap:**
-
 ```bash
-# Connect to a specific peer
-./stellar-mesh -name "Alpha Centauri" -address "localhost:8081" -bootstrap "localhost:8080"
+./stellar-mesh -name "Alpha Centauri" -port 8081 -peer-port 7868 -bootstrap "localhost:7867"
 ```
 
-### Run a Second Node (Connected to First)
+### Multi-Node Local Testing
 
 ```bash
-./stellar-mesh -name "Alpha Centauri" -address "localhost:8081" -bootstrap "localhost:8080"
+# Terminal 1 - Seed node
+./stellar-mesh -name "Sol" -port 8080 -peer-port 7867 -db sol.db
+
+# Terminal 2
+./stellar-mesh -name "Alpha" -port 8081 -peer-port 7868 -db alpha.db -bootstrap "localhost:7867"
+
+# Terminal 3
+./stellar-mesh -name "Beta" -port 8082 -peer-port 7869 -db beta.db -bootstrap "localhost:7867"
 ```
 
-### Using Docker (Recommended for Multi-Node Testing)
+### Docker
 
 ```bash
-# Build and start 3 nodes
 docker-compose up -d
 
-# Access nodes
-# Node 1: http://localhost:8080
-# Node 2: http://localhost:8081
-# Node 3: http://localhost:8082
-
-# View logs
-docker-compose logs -f
-
-# Stop all nodes
-docker-compose down
+# Access nodes at:
+# http://localhost:8080 (node1)
+# http://localhost:8081 (node2)
+# http://localhost:8082 (node3)
 ```
 
 ## Command-Line Flags
 
-- `-name`: Name of your star system (required)
-- `-address`: Host:port to bind the API server (default: localhost:8080)
-- `-db`: Path to SQLite database file (default: stellar-mesh.db)
-- `-bootstrap`: Address of a peer to connect to (optional - if not provided, uses seed nodes)
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-name` | Name of your star system | Required |
+| `-port` | HTTP API port | 8080 |
+| `-peer-port` | Peer mesh protocol port | 7867 |
+| `-db` | SQLite database path | stellar-mesh.db |
+| `-bootstrap` | Peer address to bootstrap from | (uses seed nodes) |
+| `-seed` | Custom seed for deterministic UUID | (random) |
 
-**Network Discovery:**
-- If `-bootstrap` is not provided, the node will automatically fetch the seed list from GitHub and connect to available seeds
-- Seed list is community-maintained in `SEED-NODES.txt` - submit a PR to add your node!
-- Once connected to any peer, the node will discover more peers organically through peer exchange
-- See [SEED-NODES.md](SEED-NODES.md) for information about running a seed node
+## Architecture
 
-## API Endpoints
+### Dual-Port Design
 
-### GET /system
-Returns information about this node's star system.
+Each node runs two servers:
+- **API Server** (default 8080): Web interface and JSON API for users
+- **Peer Server** (default 7867): Stellar Transport Protocol for node-to-node communication
 
-```bash
-curl http://localhost:8080/system
+### Components
+
+```
+stellar-mesh/
+├── main.go              # Entry point, CLI flags, bootstrap logic
+├── system.go            # Star system model, coordinate generation, GetMaxPeers()
+├── stellar-transport.go # Peer protocol, heartbeats, peer exchange
+├── storage.go           # SQLite persistence, attestation storage, compaction
+├── attestation.go       # Cryptographic signing/verification, reputation calculation
+├── api.go               # HTTP API endpoints
+├── web-interface.go     # HTML templates for dashboard and map
+├── version.go           # Protocol versioning and compatibility
+└── hardware.go          # Hardware-based UUID generation
 ```
 
-Response:
+### Network Protocol
+
+**Message Types:**
+- `heartbeat`: Periodic liveness proof (every 30 seconds to 3 random peers)
+- `peer_exchange`: Share peer lists (every 60 seconds)
+
+**All messages include:**
+- Sender's system info
+- Protocol version
+- Cryptographic attestation (Ed25519 signature)
+
+**Attestation Structure:**
 ```json
 {
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "name": "Sol System",
-  "x": 1234.56,
-  "y": -2345.67,
-  "z": 3456.78,
-  "star_type": {
-    "class": "G",
-    "description": "Yellow Dwarf",
-    "color": "#fff4ea",
-    "temperature": 5778,
-    "luminosity": 1.0
-  },
-  "created_at": "2025-01-04T12:00:00Z",
-  "last_seen_at": "2025-01-04T12:05:00Z",
-  "address": "localhost:8080"
+  "from_system_id": "uuid",
+  "to_system_id": "uuid",
+  "message_type": "heartbeat",
+  "timestamp": 1704412800,
+  "signature": "base64...",
+  "public_key": "base64..."
 }
 ```
 
-### GET /peers
-Returns list of known peer systems.
+### Peer Limits by Star Type
+
+Larger/rarer stars can maintain more connections, acting as natural network hubs:
+
+| Star Class | Base Peers | With Binary (+3) | With Trinary (+5) |
+|------------|------------|------------------|-------------------|
+| M (Red Dwarf) | 5 | 8 | 10 |
+| K (Orange) | 6 | 9 | 11 |
+| G (Yellow/Sol) | 7 | 10 | 12 |
+| F (Yellow-White) | 8 | 11 | 13 |
+| A (White) | 9 | 12 | 14 |
+| B (Blue Giant) | 10 | 13 | 15 |
+| O (Blue Supergiant) | 12 | 15 | 17 |
+
+Note: Attestation rate is normalized - all nodes earn reputation at the same rate regardless of peer count.
+
+### Reputation & Ranks
+
+Reputation is calculated from verified attestation count:
+
+| Rank | Required Attestations | Approximate Time |
+|------|----------------------|------------------|
+| Unranked | 0 | - |
+| Bronze | 1,000 | ~6 hours |
+| Silver | 10,000 | ~2.5 days |
+| Gold | 50,000 | ~12 days |
+| Platinum | 150,000 | ~5 weeks |
+| Diamond | 500,000 | ~4 months |
+
+Reputation is **verifiable** - any node can validate another's proof by checking attestation signatures.
+
+## API Reference
+
+### System Information
 
 ```bash
-curl http://localhost:8080/peers
+# Get system info
+curl http://localhost:8080/api/system
+
+# Get network statistics
+curl http://localhost:8080/api/stats
+
+# Get version and compatibility info
+curl http://localhost:8080/api/version
 ```
 
-### GET /stats
-Returns network statistics.
+### Peers
 
 ```bash
-curl http://localhost:8080/stats
-```
+# List connected peers
+curl http://localhost:8080/api/peers
 
-### POST /peers/add
-Manually add a peer to the network.
-
-```bash
+# Manually add a peer
 curl -X POST http://localhost:8080/peers/add \
   -H "Content-Type: application/json" \
-  -d '{"address": "localhost:8081"}'
+  -d '{"address": "localhost:7868"}'
 ```
 
-### GET /health
-Health check endpoint.
+### Reputation
+
+```bash
+# Get this node's reputation with cryptographic proof
+curl http://localhost:8080/api/reputation
+
+# Verify another node's reputation proof
+curl -X POST http://localhost:8080/api/reputation/verify \
+  -H "Content-Type: application/json" \
+  -d '{"proof": {...}}'
+```
+
+### Map & Topology
+
+```bash
+# Get all known systems and connections for visualization
+curl http://localhost:8080/api/map
+
+# Get network topology inferred from recent attestations
+curl http://localhost:8080/api/topology
+```
+
+### Database
+
+```bash
+# Get database statistics (table sizes, attestation counts)
+curl http://localhost:8080/api/database/stats
+```
+
+### Health
 
 ```bash
 curl http://localhost:8080/health
 ```
 
-## Docker
+## Web Interface
 
-### Build Image
+### Dashboard (/)
 
-```dockerfile
-FROM golang:1.22-alpine AS builder
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY *.go ./
-RUN go build -o stellar-mesh
+The main dashboard shows:
+- System identity (name, ID, coordinates)
+- Star composition (class, temperature, luminosity)
+- Current rank and reputation score
+- Connected peers with their star info
+- Network statistics
 
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
-COPY --from=builder /app/stellar-mesh .
-EXPOSE 8080
-ENTRYPOINT ["./stellar-mesh"]
-```
+### Galactic Map (/map)
 
-Build:
-```bash
-docker build -t stellar-mesh .
-```
+Interactive visualization featuring:
+- **2D View**: SVG projection with view toggle (X-Y, X-Z, Y-Z planes)
+- **3D View**: Three.js rendering with orbit controls
+- **Topology**: Connection lines based on actual attestation data
+- Stars colored by spectral class
+- Local system highlighted
 
-### Run Container
+## Database Management
 
-```bash
-docker run -d \
-  -p 8080:8080 \
-  -v stellar-data:/root \
-  stellar-mesh \
-  -name "My System" \
-  -address "0.0.0.0:8080"
-```
+### Attestation Compaction
 
-## Architecture
+Attestations are periodically summarized to prevent database bloat:
+- Raw attestations older than 24 hours are aggregated into hourly summaries
+- Summaries preserve: peer ID, direction, message type counts, sample signature
+- Compaction runs automatically; can also be triggered manually
 
-### Components
+### Storage Tables
 
-1. **System**: Represents a star system with UUID, name, 3D coordinates, and star classification
-2. **Gossip**: Handles peer discovery and network maintenance
-3. **Storage**: SQLite persistence for system info and peer list
-4. **API**: HTTP interface for querying and interaction
+- `system`: Local node identity and keys
+- `peers`: Known peer addresses and last-seen times
+- `peer_systems`: Cached system info for map visualization
+- `attestations`: Raw cryptographic proofs (recent)
+- `attestation_summaries`: Compacted historical data
 
-### Star Types
+## Star Classification
 
-Stars are classified using the Morgan-Keenan system with realistic distribution:
+Stars follow realistic galactic distribution:
 
-- **O Type** (0.003%) - Blue Supergiants - 30,000-50,000K - Extremely rare
-- **B Type** (0.13%) - Blue Giants - 10,000-20,000K - Very rare  
-- **A Type** (0.6%) - White Stars - 7,500-10,000K - Rare
-- **F Type** (3%) - Yellow-White Stars - 6,000-7,500K - Uncommon
-- **G Type** (8%) - Yellow Dwarfs - 5,200-6,000K - Like our Sun
-- **K Type** (12%) - Orange Dwarfs - 3,700-5,200K - Common
-- **M Type** (76%) - Red Dwarfs - 2,400-3,700K - Most common
+| Class | Probability | Description | Temperature | Example |
+|-------|-------------|-------------|-------------|---------|
+| O | 0.003% | Blue Supergiant | 30,000-50,000K | Extremely rare |
+| B | 0.13% | Blue Giant | 10,000-20,000K | Very rare |
+| A | 0.6% | White Star | 7,500-10,000K | Rare |
+| F | 3% | Yellow-White | 6,000-7,500K | Uncommon |
+| G | 8% | Yellow Dwarf | 5,200-6,000K | Like our Sun |
+| K | 12% | Orange Dwarf | 3,700-5,200K | Common |
+| M | 76% | Red Dwarf | 2,400-3,700K | Most common |
 
-Each star type is deterministically generated from the system's UUID and includes:
-- Spectral class
-- Description
-- Color (hex code for visualization)
-- Temperature (Kelvin)
-- Luminosity (relative to Sol)
+Multi-star systems:
+- 50% single star
+- 40% binary (two stars)
+- 10% trinary (three stars)
 
-### Spatial Clustering
+## Security Model
 
-When a new node joins the network:
+### Threat Mitigations
 
-1. **With Bootstrap**: Fetches the bootstrap peer's coordinates and clusters 100-500 units away
-2. **Without Bootstrap**: Uses deterministic coordinates from UUID (for first node)
+- **Sybil Attacks**: Rate-limited by real-time participation requirement
+- **Replay Attacks**: Timestamps and unique message signatures
+- **Impersonation**: Ed25519 signatures tied to system identity
+- **Attestation Forgery**: Cryptographic verification of all proofs
 
-This creates an organically growing galaxy where systems naturally group together rather than being randomly scattered.
+## Seed Nodes
 
-### Gossip Protocol
-
-- **Heartbeat**: Every 30 seconds to random peer
-- **Peer Exchange**: Every 60 seconds with up to 3 random peers
-- **Cleanup**: Every 5 minutes, removes peers not seen in 10 minutes
-
-### Deterministic Features
-
-The UUID can be used to deterministically generate any future system features:
-
-```go
-// Example: Generate a "star type" from UUID
-seed := system.DeterministicSeed("star_type")
-starType := seed % 10 // 0-9 representing different star classes
-```
-
-This ensures every node will always derive the same features from its UUID.
-
-## Spatial Coordinates & Clustering
-
-### Coordinate System
-- 3D space with X, Y, Z axes
-- Range: Approximately -10,000 to +10,000 units per axis (but can extend beyond based on clustering)
-- Distance measured in arbitrary "galactic units"
-
-### How Clustering Works
-
-**First Node (Bootstrap)**:
-- Generates deterministic coordinates from UUID
-- Placed randomly in galactic coordinate space
-- Acts as anchor point for network
-
-**Subsequent Nodes**:
-- Fetch coordinates from bootstrap peer
-- Generate deterministic offset from UUID (100-500 units)
-- Position themselves near the bootstrap system
-- Creates organic, interconnected clusters
-
-This means:
-- Galaxy grows naturally as nodes join
-- Systems stay relatively close together (easier to find peers)
-- Network topology reflects spatial proximity
-- Still deterministic (same UUID = same offset pattern)
-
-## Future Expansion Ideas
-
-- **System Features**: Star type, resources, habitability (all derived from UUID)
-- **Trade Routes**: Connections based on spatial proximity
-- **Factions**: Voluntary node grouping
-- **Events**: Time-based occurrences in the galaxy
-- **Resource Exchange**: Simple token/value transfer between systems
-
-## Development
-
-### Project Structure
-
-```
-stellar-mesh/
-├── main.go       # Application entry point
-├── system.go     # System model and coordinate generation
-├── storage.go    # SQLite persistence layer
-├── gossip.go     # Gossip protocol implementation
-├── api.go        # HTTP API server
-└── go.mod        # Go module definition
-```
-
-### Dependencies
-
-- `github.com/google/uuid` - UUID generation
-- `github.com/mattn/go-sqlite3` - SQLite driver (requires CGO)
-- `github.com/gorilla/mux` - HTTP router
+Public seed nodes help new nodes discover the network. See [SEED-NODES.md](SEED-NODES.md) for:
+- Current seed node list
+- How to run your own seed node
+- How to submit your node to the seed list
 
 ## Troubleshooting
 
-### Build Errors: "missing go.sum entry"
+### Build Errors
 
+**"missing go.sum entry"**
 ```bash
-# Run this first to download dependencies
-go mod tidy
-
-# Then build
-go build -o stellar-mesh
+go mod tidy && go build -o stellar-mesh
 ```
 
-### Build Errors: "gcc: command not found" or SQLite compilation errors
-
-SQLite requires CGO (C compiler). Install build tools:
-
-**macOS:**
+**"gcc: command not found"**
 ```bash
+# macOS
 xcode-select --install
-```
 
-**Ubuntu/Debian:**
-```bash
-sudo apt-get update
+# Ubuntu/Debian
 sudo apt-get install build-essential
 ```
 
-**Windows:**
-- Install MinGW-w64, or
-- Use WSL (Windows Subsystem for Linux)
+### Connection Issues
 
-### "Port already in use"
+**"rejected: at max capacity"**
+- The peer has reached its connection limit
+- Try connecting to a different peer
+- Network will route you to available nodes automatically
 
+**Nodes not discovering each other**
 ```bash
-# Use a different port
-./stellar-mesh -address "localhost:8081"
+# Check seed nodes are reachable
+curl http://seed-node-address:7867/api/discovery
 
-# Or find what's using the port
-lsof -i :8080  # macOS/Linux
-netstat -ano | findstr :8080  # Windows
+# Verify firewall allows peer port
+sudo ufw allow 7867/tcp
 ```
 
-### Nodes not connecting
+### Database Issues
 
-```bash
-# Verify bootstrap node is running
-curl http://localhost:8080/api/system
+**"database locked"**
+- Only one process can access a SQLite database
+- Use different `-db` paths for multiple local nodes
 
-# Check firewall allows connections
-# Make sure addresses are correct (use actual IP for remote nodes)
+**Database growing too large**
+- Compaction runs automatically every 6 hours
+- Check `/api/database/stats` for table sizes
 
-# For Docker, nodes connect automatically via docker-compose network
-```
+## Contributing
 
-### Database locked errors
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
 
-```bash
-# Only one process can write to SQLite at a time
-# Make sure you're not running multiple instances with the same database file
-
-# Use different database files for each node:
-./stellar-mesh -db node1.db -address :8080
-./stellar-mesh -db node2.db -address :8081
-```
+To add your node as a seed:
+1. Ensure your node has high uptime and stable connectivity
+2. Add your peer address to `SEED-NODES.txt`
+3. Submit a PR
 
 ## License
 
