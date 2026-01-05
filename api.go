@@ -445,17 +445,10 @@ func (api *API) getDatabaseStats(w http.ResponseWriter, r *http.Request) {
 
 // getTopology returns the inferred network topology based on recent attestations
 func (api *API) getTopology(w http.ResponseWriter, r *http.Request) {
-	type TopologyEdge struct {
-		FromID   string `json:"from_id"`
-		FromName string `json:"from_name"`
-		ToID     string `json:"to_id"`
-		ToName   string `json:"to_name"`
-	}
-
 	type TopologyResponse struct {
 		LocalID   string         `json:"local_id"`
 		LocalName string         `json:"local_name"`
-		Edges     []TopologyEdge `json:"edges"`
+		Edges     []TopologyEdge `json:"edges"`  // Uses the type from storage.go
 	}
 
 	edges, err := api.storage.GetRecentTopology(5 * time.Minute)
