@@ -125,8 +125,8 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
 
     // Get database size
     dbSizeStr := "unknown"
-    if size, ok := dbStats["database_size"].(string); ok {
-        dbSizeStr = size
+    if sizeBytes, ok := dbStats["database_size_bytes"].(int64); ok {
+        dbSizeStr = formatBytes(sizeBytes)
     }
 
     // Determine node health
