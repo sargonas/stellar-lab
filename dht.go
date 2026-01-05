@@ -196,7 +196,8 @@ func (dht *DHT) handleFindNode(msg *DHTMessage) (*DHTMessage, error) {
 		return nil, fmt.Errorf("find_node requires target_id")
 	}
 
-	log.Printf("FIND_NODE for %s from %s", msg.TargetID.String()[:8], msg.FromSystem.Name)
+	// Only log FIND_NODE at debug level (commented out to reduce noise)
+	// log.Printf("FIND_NODE for %s from %s", msg.TargetID.String()[:8], msg.FromSystem.Name)
 
 	// Get K closest nodes to the target
 	closest := dht.routingTable.GetClosest(*msg.TargetID, K)
