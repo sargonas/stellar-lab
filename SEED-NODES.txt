@@ -17,9 +17,4 @@
 
 # === SEED NODES ===
 # (Add seed nodes below this line)
-
-# for development purposes, remove before initial release!
-localhost:7867
-# for development purposes, remove before initial release!
-
 stellar-lab.sargonas.com:7867
