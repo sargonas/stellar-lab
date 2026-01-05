@@ -20,7 +20,7 @@ type StarType struct {
 
 // GenesisBlackHoleID is the only system that can be a supermassive black hole
 // This is the UUID of the first seed node at the galactic core (0,0,0)
-var GenesisBlackHoleID = uuid.MustParse("d700b80b-8266-5920-8d62-a42132f29c04")
+var GenesisBlackHoleID = uuid.MustParse("f467e75d-00b8-5ac7-9f0f-4e7cd1c8eb20")
 
 // MultiStarSystem represents the stellar composition of a system
 type MultiStarSystem struct {
