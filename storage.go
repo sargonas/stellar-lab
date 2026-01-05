@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
