@@ -169,6 +169,7 @@ func (s *Storage) createTables() error {
 		total_sent INTEGER NOT NULL DEFAULT 0,
 		total_received INTEGER NOT NULL DEFAULT 0,
 		last_calculated INTEGER NOT NULL DEFAULT 0,
+		longevity_start INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL
 	);
 
@@ -1036,7 +1037,7 @@ func (s *Storage) getSystemName(systemID string) string {
 func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 	var balance CreditBalance
 	err := s.db.QueryRow(`
-		SELECT system_id, balance, total_earned, total_sent, total_received, last_calculated, updated_at
+		SELECT system_id, balance, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at
 		FROM credit_balance WHERE system_id = ?
 	`, systemID.String()).Scan(
 		&balance.SystemID,
@@ -1045,15 +1046,17 @@ func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 		&balance.TotalSent,
 		&balance.TotalReceived,
 		&balance.LastUpdated,
+		&balance.LongevityStart,
 		&balance.LastUpdated,
 	)
 	if err == sql.ErrNoRows {
 		// Return zero balance for new systems
 		return &CreditBalance{
-			SystemID:    systemID,
-			Balance:     0,
-			TotalEarned: 0,
-			LastUpdated: 0,
+			SystemID:       systemID,
+			Balance:        0,
+			TotalEarned:    0,
+			LastUpdated:    0,
+			LongevityStart: 0,
 		}, nil
 	}
 	if err != nil {
@@ -1065,25 +1068,26 @@ func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 // SaveCreditBalance persists a credit balance
 func (s *Storage) SaveCreditBalance(balance *CreditBalance) error {
 	_, err := s.db.Exec(`
-		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(system_id) DO UPDATE SET
 			balance = excluded.balance,
 			total_earned = excluded.total_earned,
 			total_sent = excluded.total_sent,
 			total_received = excluded.total_received,
 			last_calculated = excluded.last_calculated,
+			longevity_start = excluded.longevity_start,
 			updated_at = excluded.updated_at
 	`, balance.SystemID.String(), balance.Balance, balance.TotalEarned,
-		balance.TotalSent, balance.TotalReceived, balance.LastUpdated, time.Now().Unix())
+		balance.TotalSent, balance.TotalReceived, balance.LastUpdated, balance.LongevityStart, time.Now().Unix())
 	return err
 }
 
 // AddCredits adds earned credits to a system's balance
 func (s *Storage) AddCredits(systemID uuid.UUID, amount int64) error {
 	_, err := s.db.Exec(`
-		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, updated_at)
-		VALUES (?, ?, ?, 0, 0, ?, ?)
+		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at)
+		VALUES (?, ?, ?, 0, 0, ?, 0, ?)
 		ON CONFLICT(system_id) DO UPDATE SET
 			balance = balance + ?,
 			total_earned = total_earned + ?,

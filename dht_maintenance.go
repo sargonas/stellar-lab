@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -290,18 +292,32 @@ func (dht *DHT) calculateCredits() {
 		peerCount = 1 // Avoid division by zero
 	}
 
-	// Calculate bridge score - how critical are we for network connectivity?
+	// Calculate inputs for credit calculation
 	bridgeScore := dht.calculateBridgeScore()
+	galaxySize := dht.routingTable.GetCacheSize() + 1 // +1 for self
+	reciprocityRatio := dht.calculateReciprocityRatio(attestations)
 
-	// Calculate earned credits (normalized, with bridge bonus)
+	// Build calculation input
+	input := CalculationInput{
+		Attestations:     attestations,
+		PeerCount:        peerCount,
+		LastCalculation:  balance.LastUpdated,
+		LongevityStart:   balance.LongevityStart,
+		BridgeScore:      bridgeScore,
+		GalaxySize:       galaxySize,
+		ReciprocityRatio: reciprocityRatio,
+	}
+
+	// Calculate earned credits with all bonuses
 	calculator := NewCreditCalculator()
-	earned := calculator.CalculateEarnedCredits(attestations, peerCount, balance.LastUpdated, bridgeScore)
+	result := calculator.CalculateEarnedCredits(input)
 
-	if earned > 0 {
+	if result.CreditsEarned > 0 {
 		// Update balance
-		balance.Balance += earned
-		balance.TotalEarned += earned
+		balance.Balance += result.CreditsEarned
+		balance.TotalEarned += result.CreditsEarned
 		balance.LastUpdated = time.Now().Unix()
+		balance.LongevityStart = result.NewLongevityStart
 
 		if err := dht.storage.SaveCreditBalance(balance); err != nil {
 			log.Printf("Failed to save credit balance: %v", err)
@@ -309,11 +325,32 @@ func (dht *DHT) calculateCredits() {
 		}
 
 		rank := GetRank(balance.Balance)
-		if bridgeScore > 0.1 {
-			log.Printf("Earned %d stellar credits (bridge bonus: %.0f%%, total: %d, rank: %s)", 
-				earned, bridgeScore*50, balance.Balance, rank.Name)
+		
+		// Build bonus summary for logging
+		bonusParts := []string{}
+		if result.Bonuses.Bridge > 0.001 {
+			bonusParts = append(bonusParts, fmt.Sprintf("bridge:+%.0f%%", result.Bonuses.Bridge*100))
+		}
+		if result.Bonuses.Longevity > 0.001 {
+			bonusParts = append(bonusParts, fmt.Sprintf("longevity:+%.0f%%", result.Bonuses.Longevity*100))
+		}
+		if result.Bonuses.Pioneer > 0.001 {
+			bonusParts = append(bonusParts, fmt.Sprintf("pioneer:+%.0f%%", result.Bonuses.Pioneer*100))
+		}
+		if result.Bonuses.Reciprocity > 0.001 {
+			bonusParts = append(bonusParts, fmt.Sprintf("reciprocity:+%.1f%%", result.Bonuses.Reciprocity*100))
+		}
+
+		if len(bonusParts) > 0 {
+			log.Printf("Earned %d stellar credits [%s] (total: %d, rank: %s)", 
+				result.CreditsEarned, strings.Join(bonusParts, ", "), balance.Balance, rank.Name)
 		} else {
-			log.Printf("Earned %d stellar credits (total: %d, rank: %s)", earned, balance.Balance, rank.Name)
+			log.Printf("Earned %d stellar credits (total: %d, rank: %s)", 
+				result.CreditsEarned, balance.Balance, rank.Name)
+		}
+
+		if result.LongevityBroken {
+			log.Printf("  Longevity streak reset due to >30min gap")
 		}
 	}
 }
@@ -326,13 +363,11 @@ func (dht *DHT) calculateBridgeScore() float64 {
 	}
 
 	// For each peer, estimate their connectivity
-	// We use their routing table size if we know it, otherwise estimate from star class
 	peerConnectivity := make([]int, 0, len(peers))
 	totalConnectivity := 0
 	
 	for _, peer := range peers {
 		// Estimate peer's connectivity based on their max peers (star class)
-		// In a healthy network, nodes tend to be at ~50-70% capacity
 		estimatedConns := peer.GetMaxPeers() / 2
 		if estimatedConns < 1 {
 			estimatedConns = 1
@@ -341,11 +376,39 @@ func (dht *DHT) calculateBridgeScore() float64 {
 		totalConnectivity += estimatedConns
 	}
 
-	// Average network connectivity (rough estimate)
 	avgConnectivity := float64(totalConnectivity) / float64(len(peers))
 	if avgConnectivity < 1 {
 		avgConnectivity = 1
 	}
 
 	return CalculateBridgeScore(len(peers), peerConnectivity, avgConnectivity)
+}
+
+// calculateReciprocityRatio determines what fraction of our peers attest back to us
+func (dht *DHT) calculateReciprocityRatio(attestations []*Attestation) float64 {
+	peers := dht.routingTable.GetAllRoutingTableNodes()
+	if len(peers) == 0 {
+		return 0.0
+	}
+
+	// Build set of peers we've heard FROM (they attested to us)
+	heardFrom := make(map[string]bool)
+	myID := dht.localSystem.ID.String()
+	
+	for _, att := range attestations {
+		// If attestation is TO us (from a peer)
+		if att.ToSystemID.String() == myID {
+			heardFrom[att.FromSystemID.String()] = true
+		}
+	}
+
+	// Count how many of our routing table peers have attested back
+	reciprocal := 0
+	for _, peer := range peers {
+		if heardFrom[peer.ID.String()] {
+			reciprocal++
+		}
+	}
+
+	return float64(reciprocal) / float64(len(peers))
 }

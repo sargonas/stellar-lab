@@ -69,6 +69,7 @@ func (w *WebInterface) Start() error {
     mux.HandleFunc("/api/peers", w.handlePeersAPI)
     mux.HandleFunc("/api/known-systems", w.handleKnownSystemsAPI)
     mux.HandleFunc("/api/stats", w.handleStatsAPI)
+    mux.HandleFunc("/api/credits", w.handleCreditsAPI)
 
     log.Printf("Web interface listening on %s", w.addr)
     go func() {
@@ -215,6 +216,43 @@ func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
     stats := w.dht.GetNetworkStats()
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(stats)
+}
+
+func (w *WebInterface) handleCreditsAPI(rw http.ResponseWriter, r *http.Request) {
+    sys := w.dht.GetLocalSystem()
+    balance, err := w.storage.GetCreditBalance(sys.ID)
+    if err != nil {
+        http.Error(rw, "Failed to get credit balance", http.StatusInternalServerError)
+        return
+    }
+
+    rank := GetRank(balance.Balance)
+    nextRank, creditsNeeded := GetNextRank(balance.Balance)
+
+    // Calculate current longevity streak in weeks
+    var longevityWeeks float64
+    if balance.LongevityStart > 0 {
+        longevitySeconds := time.Now().Unix() - balance.LongevityStart
+        longevityWeeks = float64(longevitySeconds) / (7 * 24 * 3600)
+    }
+
+    response := map[string]interface{}{
+        "system_id":         sys.ID.String(),
+        "balance":           balance.Balance,
+        "total_earned":      balance.TotalEarned,
+        "total_sent":        balance.TotalSent,
+        "total_received":    balance.TotalReceived,
+        "rank":              rank.Name,
+        "rank_color":        rank.Color,
+        "next_rank":         nextRank.Name,
+        "credits_to_next":   creditsNeeded,
+        "longevity_weeks":   longevityWeeks,
+        "longevity_bonus":   min(longevityWeeks * 0.01, 0.52),
+        "last_updated":      balance.LastUpdated,
+    }
+
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(response)
 }
 
 // formatBytes formats a byte count as a human-readable string

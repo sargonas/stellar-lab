@@ -25,6 +25,16 @@ import (
 // - Normalized: A node with 13 peers earns the same as one with 5
 // - Attestations prove uptime, but don't directly equal credits
 //
+// Bonuses (applied to base rate):
+// - Bridge bonus: Up to +50% for being critical to network connectivity
+// - Longevity bonus: +1% per week continuous uptime, max +52% at 1 year
+//   (resets after 30 min downtime)
+// - Pioneer bonus: Up to +30% when network is small (<20 nodes)
+// - Reciprocity bonus: Up to +5% for healthy bidirectional peer relationships
+//
+// Grace period: 15 minutes - short gaps don't count as downtime
+// Longevity reset: 30 minutes - longer gaps reset your streak
+//
 // Rank thresholds (designed for weeks/months progression):
 // - Unranked:  0 credits       (new node)
 // - Bronze:    168 credits     (~1 week)
@@ -37,12 +47,13 @@ import (
 
 // CreditBalance represents a system's stellar credit balance
 type CreditBalance struct {
-	SystemID      uuid.UUID `json:"system_id"`
-	Balance       int64     `json:"balance"`         // Current spendable credits
-	TotalEarned   int64     `json:"total_earned"`    // Lifetime earned (for stats)
-	TotalSent     int64     `json:"total_sent"`      // Lifetime sent to others
-	TotalReceived int64     `json:"total_received"`  // Lifetime received from others
-	LastUpdated   int64     `json:"last_updated"`    // Unix timestamp
+	SystemID        uuid.UUID `json:"system_id"`
+	Balance         int64     `json:"balance"`           // Current spendable credits
+	TotalEarned     int64     `json:"total_earned"`      // Lifetime earned (for stats)
+	TotalSent       int64     `json:"total_sent"`        // Lifetime sent to others
+	TotalReceived   int64     `json:"total_received"`    // Lifetime received from others
+	LastUpdated     int64     `json:"last_updated"`      // Unix timestamp
+	LongevityStart  int64     `json:"longevity_start"`   // When current uptime streak began
 }
 
 // CreditRank represents the rank thresholds
@@ -90,11 +101,13 @@ func GetNextRank(balance int64) (CreditRank, int64) {
 // CreditCalculator handles normalized credit earning
 type CreditCalculator struct {
 	// Credits earned per hour of verified uptime
-	// This is the BASE RATE - same for all nodes regardless of peer count
 	CreditsPerHour float64
 	
 	// Grace period for restarts/updates (no penalty for gaps up to this duration)
 	GracePeriod time.Duration
+	
+	// Longevity reset threshold (gaps longer than this reset your streak)
+	LongevityResetThreshold time.Duration
 	
 	// Minimum uptime ratio to earn credits (after grace period consideration)
 	MinUptimeRatio float64
@@ -103,36 +116,55 @@ type CreditCalculator struct {
 // NewCreditCalculator creates a calculator with default settings
 func NewCreditCalculator() *CreditCalculator {
 	return &CreditCalculator{
-		CreditsPerHour: 1.0,              // Base: 1 credit per hour
-		GracePeriod:    15 * time.Minute, // 15 min grace for updates
-		MinUptimeRatio: 0.5,              // Need 50%+ uptime to earn
+		CreditsPerHour:          1.0,              // Base: 1 credit per hour
+		GracePeriod:             15 * time.Minute, // 15 min grace for updates
+		LongevityResetThreshold: 30 * time.Minute, // 30 min gap resets streak
+		MinUptimeRatio:          0.5,              // Need 50%+ uptime to earn
 	}
 }
 
-// CalculateEarnedCredits computes credits from attestations with normalization
-// 
-// We measure UPTIME, not raw attestation count.
-// A node with more peers generates more attestations per hour, but that
-// doesn't mean they've been online longer.
-//
-// Features:
-// - Normalized earning (peer count doesn't matter)
-// - 15-minute grace period for restarts/updates
-// - Bridge bonus for critical connectivity
-//
-func (cc *CreditCalculator) CalculateEarnedCredits(
-	attestations []*Attestation,
-	peerCount int,
-	lastCalculation int64,
-	bridgeScore float64, // 0.0 to 1.0, how critical this node is for connectivity
-) int64 {
-	if len(attestations) == 0 || peerCount == 0 {
-		return 0
+// CreditBonuses holds the individual bonus multipliers for transparency
+type CreditBonuses struct {
+	Bridge     float64 `json:"bridge"`     // 0.0 to 0.50
+	Longevity  float64 `json:"longevity"`  // 0.0 to 0.52
+	Pioneer    float64 `json:"pioneer"`    // 0.0 to 0.30
+	Reciprocity float64 `json:"reciprocity"` // 0.0 to 0.05
+	Total      float64 `json:"total"`      // Sum of all bonuses
+}
+
+// CalculationInput holds all inputs for credit calculation
+type CalculationInput struct {
+	Attestations     []*Attestation
+	PeerCount        int
+	LastCalculation  int64
+	LongevityStart   int64   // When current uptime streak began
+	BridgeScore      float64 // 0.0 to 1.0
+	GalaxySize       int     // Total nodes in network
+	ReciprocityRatio float64 // 0.0 to 1.0, fraction of peers that attest back
+}
+
+// CalculationResult holds the result with breakdown
+type CalculationResult struct {
+	CreditsEarned    int64         `json:"credits_earned"`
+	BaseCredits      float64       `json:"base_credits"`
+	Bonuses          CreditBonuses `json:"bonuses"`
+	LongevityBroken  bool          `json:"longevity_broken"`  // True if streak was reset
+	NewLongevityStart int64        `json:"new_longevity_start"`
+}
+
+// CalculateEarnedCredits computes credits with all bonuses
+func (cc *CreditCalculator) CalculateEarnedCredits(input CalculationInput) CalculationResult {
+	result := CalculationResult{
+		NewLongevityStart: input.LongevityStart,
+	}
+
+	if len(input.Attestations) == 0 || input.PeerCount == 0 {
+		return result
 	}
 
 	// Find time bounds
-	var oldest, newest int64 = attestations[0].Timestamp, attestations[0].Timestamp
-	for _, att := range attestations {
+	var oldest, newest int64 = input.Attestations[0].Timestamp, input.Attestations[0].Timestamp
+	for _, att := range input.Attestations {
 		if att.Timestamp < oldest {
 			oldest = att.Timestamp
 		}
@@ -142,26 +174,24 @@ func (cc *CreditCalculator) CalculateEarnedCredits(
 	}
 
 	// Only count time since last calculation
-	if oldest < lastCalculation {
-		oldest = lastCalculation
+	if oldest < input.LastCalculation {
+		oldest = input.LastCalculation
 	}
 
-	// Time span in hours
+	// Time span
 	spanSeconds := newest - oldest
 	if spanSeconds <= 0 {
-		return 0
+		return result
 	}
 	spanHours := float64(spanSeconds) / 3600.0
 
 	// Expected attestations per hour based on peer count
-	// Liveness loop runs every 5 minutes = 12 times per hour
-	// Each run pings all peers, so expected = peerCount * 12 per hour
-	expectedPerHour := float64(peerCount) * 12.0
+	expectedPerHour := float64(input.PeerCount) * 12.0 // Liveness every 5 min
 
-	// Count attestations and identify gaps for grace period
+	// Count attestations and collect timestamps for gap analysis
 	actualCount := 0
 	var timestamps []int64
-	for _, att := range attestations {
+	for _, att := range input.Attestations {
 		if att.Timestamp >= oldest && att.Verify() {
 			actualCount++
 			timestamps = append(timestamps, att.Timestamp)
@@ -170,57 +200,113 @@ func (cc *CreditCalculator) CalculateEarnedCredits(
 
 	// Sort timestamps to find gaps
 	sortInt64s(timestamps)
-	
-	// Calculate effective uptime considering grace period
-	// Gaps under 15 minutes don't count against you
+
+	// Check for longevity-breaking gaps (>30 min)
 	gracePeriodSec := int64(cc.GracePeriod.Seconds())
+	longevityResetSec := int64(cc.LongevityResetThreshold.Seconds())
 	totalGapTime := int64(0)
+	
 	for i := 1; i < len(timestamps); i++ {
 		gap := timestamps[i] - timestamps[i-1]
-		// Expected gap is ~5 minutes (300 sec) between liveness checks
-		// If gap is larger than grace period, count the excess as downtime
+		
+		// Check if this gap breaks longevity streak
+		if gap > longevityResetSec {
+			result.LongevityBroken = true
+			result.NewLongevityStart = timestamps[i] // Streak restarts from here
+		}
+		
+		// Count excess gap time beyond grace period
 		if gap > gracePeriodSec {
 			totalGapTime += gap - gracePeriodSec
 		}
 	}
 
-	// Effective online time = span - excess gaps
+	// If no longevity start set, start now
+	if result.NewLongevityStart == 0 {
+		if input.LongevityStart == 0 {
+			result.NewLongevityStart = oldest
+		}
+	}
+
+	// Effective online time
 	effectiveSeconds := spanSeconds - totalGapTime
 	if effectiveSeconds < 0 {
 		effectiveSeconds = 0
 	}
 	effectiveHours := float64(effectiveSeconds) / 3600.0
 
-	// Calculate uptime ratio based on attestation density
+	// Calculate uptime ratio
 	expectedTotal := expectedPerHour * spanHours
 	uptimeRatio := float64(actualCount) / expectedTotal
 	if uptimeRatio > 1.0 {
 		uptimeRatio = 1.0
 	}
 
-	// Require minimum uptime to earn anything
+	// Require minimum uptime
 	if uptimeRatio < cc.MinUptimeRatio {
-		return 0
+		return result
 	}
 
-	// Base credits = effective hours * rate * uptime_ratio
-	baseCredits := effectiveHours * cc.CreditsPerHour * uptimeRatio
+	// ==========================================================================
+	// BASE CREDITS
+	// ==========================================================================
+	result.BaseCredits = effectiveHours * cc.CreditsPerHour * uptimeRatio
 
 	// ==========================================================================
-	// BRIDGE BONUS
+	// BONUSES
 	// ==========================================================================
-	// Nodes that serve as critical bridges (connecting otherwise isolated clusters)
-	// earn bonus credits. This rewards nodes that maintain connectivity when
-	// other nodes go offline.
-	//
-	// bridgeScore ranges from 0.0 (not critical) to 1.0 (highly critical)
-	// Bonus: up to 50% extra credits for being a critical bridge
-	//
-	bridgeBonus := baseCredits * bridgeScore * 0.5
 
-	totalCredits := baseCredits + bridgeBonus
+	// 1. BRIDGE BONUS - Up to +50% for network criticality
+	result.Bonuses.Bridge = input.BridgeScore * 0.50
 
-	return int64(totalCredits)
+	// 2. LONGEVITY BONUS - +1% per week, max +52% at 1 year
+	longevityWeeks := float64(0)
+	if !result.LongevityBroken && result.NewLongevityStart > 0 {
+		longevitySeconds := newest - result.NewLongevityStart
+		longevityWeeks = float64(longevitySeconds) / (7 * 24 * 3600)
+	}
+	result.Bonuses.Longevity = min(longevityWeeks * 0.01, 0.52)
+
+	// 3. PIONEER BONUS - Up to +30% for small networks
+	result.Bonuses.Pioneer = calculatePioneerBonus(input.GalaxySize)
+
+	// 4. RECIPROCITY BONUS - Up to +5% for bidirectional relationships
+	result.Bonuses.Reciprocity = input.ReciprocityRatio * 0.05
+
+	// Total bonus multiplier
+	result.Bonuses.Total = result.Bonuses.Bridge + 
+		result.Bonuses.Longevity + 
+		result.Bonuses.Pioneer + 
+		result.Bonuses.Reciprocity
+
+	// Apply bonuses
+	totalCredits := result.BaseCredits * (1.0 + result.Bonuses.Total)
+	result.CreditsEarned = int64(totalCredits)
+
+	return result
+}
+
+// calculatePioneerBonus returns bonus for small network participation
+// +30% at <20 nodes, +15% at <50 nodes, +5% at <100 nodes, 0% at 100+
+func calculatePioneerBonus(galaxySize int) float64 {
+	if galaxySize < 20 {
+		return 0.30
+	} else if galaxySize < 50 {
+		// Linear interpolation from 30% to 15%
+		return 0.30 - (float64(galaxySize-20)/30.0)*0.15
+	} else if galaxySize < 100 {
+		// Linear interpolation from 15% to 0%
+		return 0.15 - (float64(galaxySize-50)/50.0)*0.15
+	}
+	return 0.0
+}
+
+// min returns the smaller of two float64 values
+func min(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // sortInt64s sorts a slice of int64 in ascending order

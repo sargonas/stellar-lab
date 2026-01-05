@@ -22,8 +22,41 @@ Stellar Mesh creates a virtual galaxy where each participant runs a node represe
 - **DHT Routing**: Kademlia-style k-bucket routing with XOR distance metric
 - **Cryptographic Identity**: Ed25519 keypairs for authentication
 - **Attestation System**: Signed proofs of every peer interaction
+- **Stellar Credits**: Earn credits for uptime with bonuses for network contribution
 - **Web Interface**: A simple dashboard with galaxy map visualization
 - **Persistent Storage**: SQLite with automatic compaction
+
+## Stellar Credits
+
+Nodes earn Stellar Credits based on verified uptime, with bonuses that reward healthy network participation.
+
+### Base Rate
+- **1 credit per hour** of verified uptime
+- Normalized across all star types (an M-class earns the same as an O-class)
+
+### Bonuses
+
+| Bonus | Max | Description |
+|-------|-----|-------------|
+| **Bridge** | +50% | Being critical for network connectivity (peers with few connections depend on you) |
+| **Longevity** | +52% | +1% per week of continuous uptime (resets after 30-min gap) |
+| **Pioneer** | +30% | Participating when the network is small (<20 nodes) |
+| **Reciprocity** | +5% | Healthy bidirectional relationships with peers |
+
+### Grace Periods
+- **15 minutes**: Short gaps (restarts, updates) don't affect credits earnings for that hour
+- **30 minutes**: Gaps below this will not reset your longevity streak
+
+### Ranks
+
+| Rank | Credits | Approximate Time |
+|------|---------|------------------|
+| Unranked | 0 | New node |
+| Bronze | 168 | ~1 week |
+| Silver | 720 | ~1 month |
+| Gold | 2,160 | ~3 months |
+| Platinum | 4,320 | ~6 months |
+| Diamond | 8,640 | ~1 year |
 
 ## Quick Start
 
@@ -129,6 +162,7 @@ Each node runs two HTTP servers:
 | Liveness | 5 min | Ping routing table peers |
 | Cache Prune | 6 hours | Remove stale cache entries |
 | Compaction | Daily 3 AM | Aggregate attestations older than 14 days |
+| Credits | 1 hour | Calculate and store earned credits |
 
 ### Star Types & Peer Capacity
 
@@ -162,6 +196,26 @@ GET /api/system            # Local system info
 GET /api/peers             # Routing table peers
 GET /api/known-systems     # All cached systems
 GET /api/stats             # Network statistics
+GET /api/credits           # Credit balance and rank info
+```
+
+### Credits API Response
+
+```json
+{
+  "system_id": "40585bf2-5ccc-50fb-8da6-4f2e0135d5f7",
+  "balance": 168,
+  "total_earned": 168,
+  "total_sent": 0,
+  "total_received": 0,
+  "rank": "Bronze",
+  "rank_color": "#cd7f32",
+  "next_rank": "Silver",
+  "credits_to_next": 552,
+  "longevity_weeks": 1.2,
+  "longevity_bonus": 0.012,
+  "last_updated": 1736121600
+}
 ```
 
 ### DHT Protocol Server (:7867)
@@ -178,6 +232,7 @@ The dashboard displays:
 
 - **System Info**: Name, UUID, star classification, coordinates
 - **DHT Statistics**: Routing table size, cache size, active buckets
+- **Stellar Credits**: Balance, rank, and progress to next rank
 - **Health Status**: Connectivity indicator (Healthy/Warning/Isolated)
 - **Peer List**: Connected systems with coordinates and star types
 - **Galaxy Map**: Interactive 2D visualization
@@ -222,6 +277,7 @@ https://raw.githubusercontent.com/sargonas/stellar-lab/main/SEED-NODES.txt
 ├── bootstrap.go         # Network join logic
 ├── system.go            # Star system model
 ├── attestation.go       # Cryptographic attestations
+├── credits.go           # Stellar credits system
 ├── storage.go           # SQLite persistence & compaction
 ├── hardware.go          # Hardware fingerprinting
 ├── web-interface.go     # Web UI and APIs
@@ -240,11 +296,13 @@ https://raw.githubusercontent.com/sargonas/stellar-lab/main/SEED-NODES.txt
 - `peer_systems` - Cached remote system info
 - `attestations` - Recent signed interaction proofs
 - `attestation_summaries` - Compacted historical aggregates
+- `credit_balance` - Stellar credits balance and streak tracking
+- `credit_transfers` - Transfer history (for future use)
 
 ### Attestation Compaction
 
 Runs daily at 3 AM:
-- Aggregates attestations older than 7 days into weekly summaries
+- Aggregates attestations older than 14 days into weekly summaries
 - Preserves: peer ID, direction, message counts, sample signature
 - Prevents unbounded database growth
 
