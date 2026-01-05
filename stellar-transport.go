@@ -14,8 +14,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const MaxPeers = 5
-
 // TransportMessage represents information exchanged between nodes
 // In protocol v1.0.0+, attestations are REQUIRED for security
 type TransportMessage struct {
