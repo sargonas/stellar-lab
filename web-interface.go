@@ -355,7 +355,7 @@ func (api *API) ServeWebInterface(w http.ResponseWriter, r *http.Request) {
 		PublicKey:          repSummary["public_key"].(string),
 		PeerCount:          len(peers),
 		Peers:              peerDisplays,
-		TotalSystems:       len(peers) + 1, // Simplified: we + known peers
+		TotalSystems:       api.storage.CountKnownSystems() + 1, // All known systems + self
 	}
 	
 	tmpl, err := template.New("web").Parse(webInterfaceHTML)

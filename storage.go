@@ -784,3 +784,13 @@ func (s *Storage) GetDatabaseStats() (map[string]interface{}, error) {
 
     return stats, nil
 }
+
+// CountKnownSystems returns the total number of unique systems we've heard about
+func (s *Storage) CountKnownSystems() int {
+    var count int
+    err := s.db.QueryRow(`SELECT COUNT(*) FROM peer_systems`).Scan(&count)
+    if err != nil {
+        return 0
+    }
+    return count
+}
