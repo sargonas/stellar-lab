@@ -7,10 +7,9 @@ import (
 )
 
 // Protocol version for DHT-based stellar-mesh
-// v2.0.0 - Complete rewrite using Kademlia-style DHT
 const (
-	ProtocolMajor = 2
-	ProtocolMinor = 0
+	ProtocolMajor = 0
+	ProtocolMinor = 9
 	ProtocolPatch = 0
 )
 
