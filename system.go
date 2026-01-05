@@ -276,6 +276,22 @@ type Peer struct {
 	LastSeenAt time.Time `json:"last_seen_at"`
 }
 
+type DiscoverySystem struct {
+    ID                 string  `json:"id"`
+    Name               string  `json:"name"`
+    X                  float64 `json:"x"`
+    Y                  float64 `json:"y"`
+    Z                  float64 `json:"z"`
+    PeerAddress        string  `json:"peer_address"`
+    DistanceFromOrigin float64 `json:"distance_from_origin"`
+    CurrentPeers       int     `json:"current_peers"`
+    MaxPeers           int     `json:"max_peers"`
+    HasCapacity        bool    `json:"has_capacity"`
+}
+
+// MaxPeers is the maximum number of peers a node will accept
+const MaxPeers = 5
+
 // NewSystem creates a new system with generated UUID and coordinates
 // If nearbySystem is provided, the new system will be clustered near it
 func NewSystem(name string, address string, nearbySystem *System) *System {
