@@ -415,13 +415,24 @@ func (api *API) getMapData(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Add connections for direct peers only (we only know our own connections)
-	peers := api.transport.GetPeers()
-	for _, peer := range peers {
-		connections = append(connections, MapConnection{
-			From: api.system.ID.String(),
-			To:   peer.SystemID.String(),
-		})
+	// Use topology edges from attestations to show actual mesh connections
+	edges, err := api.storage.GetRecentTopology(5 * time.Minute)
+	if err == nil && len(edges) > 0 {
+		for _, edge := range edges {
+			connections = append(connections, MapConnection{
+				From: edge.FromID,
+				To:   edge.ToID,
+			})
+		}
+	} else {
+		// Fallback to direct peers only if topology unavailable
+		peers := api.transport.GetPeers()
+		for _, peer := range peers {
+			connections = append(connections, MapConnection{
+				From: api.system.ID.String(),
+				To:   peer.SystemID.String(),
+			})
+		}
 	}
 
 	mapData := MapData{
