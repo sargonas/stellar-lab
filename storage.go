@@ -829,3 +829,77 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
 
     return systems, nil
 }
+
+// TopologyEdge represents a connection between two systems
+type TopologyEdge struct {
+	FromID   string `json:"from_id"`
+	FromName string `json:"from_name"`
+	ToID     string `json:"to_id"`
+	ToName   string `json:"to_name"`
+}
+
+// GetRecentTopology returns inferred connections from recent attestations
+func (s *Storage) GetRecentTopology(maxAge time.Duration) ([]TopologyEdge, error) {
+	cutoff := time.Now().Add(-maxAge).Unix()
+
+	rows, err := s.db.Query(`
+		SELECT DISTINCT from_system_id, to_system_id
+		FROM attestations
+		WHERE timestamp > ?
+	`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Collect unique edges (deduplicate A→B and B→A)
+	edgeMap := make(map[string]TopologyEdge)
+
+	for rows.Next() {
+		var fromID, toID string
+		if err := rows.Scan(&fromID, &toID); err != nil {
+			continue
+		}
+
+		// Create canonical edge key (smaller ID first) to deduplicate
+		var key string
+		if fromID < toID {
+			key = fromID + ":" + toID
+		} else {
+			key = toID + ":" + fromID
+		}
+
+		if _, exists := edgeMap[key]; !exists {
+			fromName := s.getSystemName(fromID)
+			toName := s.getSystemName(toID)
+
+			edgeMap[key] = TopologyEdge{
+				FromID:   fromID,
+				FromName: fromName,
+				ToID:     toID,
+				ToName:   toName,
+			}
+		}
+	}
+
+	// Convert map to slice
+	edges := make([]TopologyEdge, 0, len(edgeMap))
+	for _, edge := range edgeMap {
+		edges = append(edges, edge)
+	}
+
+	return edges, nil
+}
+
+// getSystemName looks up a system name from peer_systems cache
+func (s *Storage) getSystemName(systemID string) string {
+	var name string
+	err := s.db.QueryRow(`SELECT name FROM peer_systems WHERE id = ?`, systemID).Scan(&name)
+	if err != nil {
+		if len(systemID) >= 8 {
+			return systemID[:8] + "..."
+		}
+		return systemID
+	}
+	return name
+}

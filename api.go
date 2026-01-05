@@ -44,6 +44,7 @@ func (api *API) setupRoutes() {
 	api.router.HandleFunc("/api/reputation/verify", api.verifyReputation).Methods("POST")
 	api.router.HandleFunc("/api/version", api.getVersion).Methods("GET")
 	api.router.HandleFunc("/api/map", api.getMapData).Methods("GET")
+	api.router.HandleFunc("/api/topology", api.getTopology).Methods("GET")
 	api.router.HandleFunc("/api/database/stats", api.getDatabaseStats).Methods("GET")
 
 	// Legacy endpoints (for backward compatibility)
@@ -440,4 +441,34 @@ func (api *API) getDatabaseStats(w http.ResponseWriter, r *http.Request) {
         return
     }
     respondJSON(w, http.StatusOK, stats)
+}
+
+// getTopology returns the inferred network topology based on recent attestations
+func (api *API) getTopology(w http.ResponseWriter, r *http.Request) {
+	type TopologyEdge struct {
+		FromID   string `json:"from_id"`
+		FromName string `json:"from_name"`
+		ToID     string `json:"to_id"`
+		ToName   string `json:"to_name"`
+	}
+
+	type TopologyResponse struct {
+		LocalID   string         `json:"local_id"`
+		LocalName string         `json:"local_name"`
+		Edges     []TopologyEdge `json:"edges"`
+	}
+
+	edges, err := api.storage.GetRecentTopology(5 * time.Minute)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to get topology")
+		return
+	}
+
+	response := TopologyResponse{
+		LocalID:   api.system.ID.String(),
+		LocalName: api.system.Name,
+		Edges:     edges,
+	}
+
+	respondJSON(w, http.StatusOK, response)
 }
