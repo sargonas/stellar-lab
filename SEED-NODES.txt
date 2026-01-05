@@ -1,19 +1,14 @@
-# Stellar Mesh - Community Seed Nodes
-#
-# This file contains a list of seed nodes for network discovery.
-# Each line should contain one seed node address in the format: host:port
+# Stellar Lab - Community Seed Nodes
 #
 # Guidelines for adding seed nodes:
 # - Node must be publicly accessible
 # - Node should have 95%+ uptime
-# - Node should be running latest stable version
+# - Node should be comitted to running latest stable version
 # - Add one address per line
 # - Use # for comments
 #
 # To add your seed node:
-# 1. Ensure your node meets the requirements in SEED-NODES.md
-# 2. Submit a PR adding your address below
-# 3. Include your contact info and uptime commitment in the PR description
+# Submit a PR adding your address below
 #
 # Format: host:port or ip:port
 # Examples:
@@ -23,8 +18,8 @@
 # === SEED NODES ===
 # (Add seed nodes below this line)
 
-# No seed nodes yet - be the first to volunteer!
-# See SEED-NODES.md for how to run a seed node
-
-#stellar-lab.sargonas.com:7867
+# for development purposes, remove before initial release!
 localhost:7867
+# for development purposes, remove before initial release!
+
+stellar-lab.sargonas.com:7867

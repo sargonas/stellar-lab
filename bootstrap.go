@@ -1,0 +1,255 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+)
+
+// BootstrapConfig holds configuration for the bootstrap process
+type BootstrapConfig struct {
+	SeedNodes       []string      // Seed node addresses to try
+	BootstrapPeer   string        // Direct peer to bootstrap from (optional)
+	Timeout         time.Duration // Timeout for bootstrap operations
+	MinInitialPeers int           // Minimum peers before considering bootstrap complete
+}
+
+// DefaultBootstrapConfig returns sensible defaults
+func DefaultBootstrapConfig() BootstrapConfig {
+	return BootstrapConfig{
+		Timeout:         30 * time.Second,
+		MinInitialPeers: 2,
+	}
+}
+
+// Bootstrap joins the DHT network
+func (dht *DHT) Bootstrap(config BootstrapConfig) error {
+	log.Printf("Starting DHT bootstrap...")
+
+	// First, try to rejoin using cached peers from previous sessions
+	cachedPeers := dht.routingTable.GetAllRoutingTableNodes()
+	if len(cachedPeers) > 0 {
+		log.Printf("Found %d cached peers from previous session, attempting to rejoin...", len(cachedPeers))
+		connected := 0
+		for _, peer := range cachedPeers {
+			if peer.PeerAddress == "" {
+				continue
+			}
+			log.Printf("  Pinging cached peer: %s (%s)", peer.Name, peer.PeerAddress)
+			if _, err := dht.Ping(peer.PeerAddress); err != nil {
+				log.Printf("    Failed: %v", err)
+				dht.routingTable.MarkFailed(peer.ID)
+				continue
+			}
+			log.Printf("    Connected!")
+			dht.routingTable.MarkVerified(peer.ID)
+			connected++
+		}
+		if connected > 0 {
+			log.Printf("Rejoined network via %d cached peers", connected)
+			return dht.completeBootstrap()
+		}
+		log.Printf("Could not reach any cached peers, falling back to bootstrap...")
+	}
+
+	// If we have a direct bootstrap peer, try that first
+	if config.BootstrapPeer != "" {
+		if err := dht.bootstrapFromPeer(config.BootstrapPeer); err != nil {
+			log.Printf("Direct bootstrap peer failed: %v", err)
+		} else {
+			log.Printf("Successfully bootstrapped from direct peer")
+			return dht.completeBootstrap()
+		}
+	}
+
+	// Try seed nodes
+	if len(config.SeedNodes) > 0 {
+		for _, seedAddr := range config.SeedNodes {
+			log.Printf("Trying seed node: %s", seedAddr)
+			if err := dht.bootstrapFromSeed(seedAddr); err != nil {
+				log.Printf("  Failed: %v", err)
+				continue
+			}
+			log.Printf("Successfully bootstrapped from seed node")
+			return dht.completeBootstrap()
+		}
+	}
+
+	// Try fetching seed nodes from GitHub
+	log.Printf("Fetching seed nodes from GitHub...")
+	seedNodes := FetchSeedNodes()
+	for _, seedAddr := range seedNodes {
+		log.Printf("Trying seed node: %s", seedAddr)
+		if err := dht.bootstrapFromSeed(seedAddr); err != nil {
+			log.Printf("  Failed: %v", err)
+			continue
+		}
+		log.Printf("Successfully bootstrapped from seed node")
+		return dht.completeBootstrap()
+	}
+
+	// No bootstrap sources available
+	rtSize := dht.routingTable.GetRoutingTableSize()
+	if rtSize > 0 {
+		log.Printf("Warning: Could not contact any seed nodes, but have %d cached peers", rtSize)
+		return dht.completeBootstrap()
+	}
+
+	log.Printf("Warning: Could not find any bootstrap peers")
+	log.Printf("  Your node is running but isolated")
+	log.Printf("  Other nodes can still connect to you directly")
+	return nil
+}
+
+// bootstrapFromPeer bootstraps from a known peer address
+func (dht *DHT) bootstrapFromPeer(address string) error {
+	// Ping the peer to get their system info
+	sys, err := dht.Ping(address)
+	if err != nil {
+		return fmt.Errorf("failed to ping bootstrap peer: %w", err)
+	}
+
+	log.Printf("  Connected to %s (%s)", sys.Name, sys.ID.String()[:8])
+
+	// Add to routing table
+	dht.routingTable.Update(sys)
+	dht.routingTable.MarkVerified(sys.ID)
+
+	// Query for nodes close to us
+	closest, err := dht.FindNodeDirect(address, dht.localSystem.ID)
+	if err != nil {
+		return fmt.Errorf("failed to find_node from bootstrap peer: %w", err)
+	}
+
+	for _, node := range closest {
+		dht.routingTable.Update(node)
+	}
+
+	log.Printf("  Learned about %d nodes", len(closest))
+	return nil
+}
+
+// bootstrapFromSeed bootstraps using a seed node's discovery endpoint
+func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
+	// First try the discovery endpoint
+	discoveryURL := fmt.Sprintf("http://%s/api/discovery", seedAddr)
+	resp, err := http.Get(discoveryURL)
+	if err != nil {
+		return fmt.Errorf("failed to contact seed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var systems []DiscoverySystem
+	if err := json.NewDecoder(resp.Body).Decode(&systems); err != nil {
+		return fmt.Errorf("failed to parse discovery response: %w", err)
+	}
+
+	if len(systems) == 0 {
+		return fmt.Errorf("seed returned no systems")
+	}
+
+	log.Printf("  Seed returned %d systems", len(systems))
+
+	// Try to connect to systems with capacity
+	connected := 0
+	for _, sys := range systems {
+		if sys.ID == dht.localSystem.ID.String() {
+			continue // Skip ourselves
+		}
+
+		// Prefer systems with capacity
+		if !sys.HasCapacity && connected > 0 {
+			continue
+		}
+
+		// Ping to establish connection and get full system info
+		fullSys, err := dht.Ping(sys.PeerAddress)
+		if err != nil {
+			log.Printf("    Failed to ping %s: %v", sys.Name, err)
+			continue
+		}
+
+		dht.routingTable.Update(fullSys)
+		dht.routingTable.MarkVerified(fullSys.ID)
+		connected++
+		log.Printf("    Connected to %s", fullSys.Name)
+
+		// Also do a find_node to learn more peers
+		closest, err := dht.FindNodeDirect(sys.PeerAddress, dht.localSystem.ID)
+		if err == nil {
+			for _, node := range closest {
+				dht.routingTable.Update(node)
+			}
+		}
+
+		if connected >= 3 {
+			break // Enough initial connections
+		}
+	}
+
+	if connected == 0 {
+		return fmt.Errorf("could not connect to any systems from seed")
+	}
+
+	return nil
+}
+
+// completeBootstrap finishes the bootstrap process
+func (dht *DHT) completeBootstrap() error {
+	log.Printf("Completing bootstrap process...")
+
+	// Step 1: Do an iterative lookup for ourselves
+	// This populates our routing table with relevant nodes
+	log.Printf("  Looking up our own ID to populate routing table...")
+	result := dht.FindNode(dht.localSystem.ID)
+	log.Printf("  Found %d close nodes in %d hops", len(result.ClosestNodes), result.Hops)
+
+	// Step 2: Refresh random buckets to learn about diverse parts of the network
+	log.Printf("  Refreshing random buckets...")
+	refreshed := 0
+	for i := 0; i < IDBits; i++ {
+		// Only refresh some buckets to avoid flooding
+		if i%10 == 0 || i < 10 {
+			randomID := dht.routingTable.RandomIDInBucket(i)
+			dht.FindNode(randomID)
+			refreshed++
+		}
+	}
+	log.Printf("  Refreshed %d buckets", refreshed)
+
+	// Step 3: Announce ourselves to closest nodes
+	log.Printf("  Announcing to closest nodes...")
+	announced := 0
+	for _, sys := range result.ClosestNodes {
+		if sys.ID == dht.localSystem.ID || sys.PeerAddress == "" {
+			continue
+		}
+		if err := dht.AnnounceTo(sys.PeerAddress); err == nil {
+			announced++
+		}
+	}
+	log.Printf("  Announced to %d nodes", announced)
+
+	// Report final state
+	rtSize := dht.routingTable.GetRoutingTableSize()
+	cacheSize := dht.routingTable.GetCacheSize()
+	log.Printf("Bootstrap complete: %d nodes in routing table, %d in cache", rtSize, cacheSize)
+
+	return nil
+}
+
+// BootstrapFromAddress is a convenience function to bootstrap from a single address
+func (dht *DHT) BootstrapFromAddress(address string) error {
+	config := DefaultBootstrapConfig()
+	config.BootstrapPeer = address
+	return dht.Bootstrap(config)
+}
+
+// BootstrapFromSeedNodes is a convenience function to bootstrap from seed nodes
+func (dht *DHT) BootstrapFromSeedNodes(seeds []string) error {
+	config := DefaultBootstrapConfig()
+	config.SeedNodes = seeds
+	return dht.Bootstrap(config)
+}
