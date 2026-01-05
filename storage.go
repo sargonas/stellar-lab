@@ -123,6 +123,7 @@ func (s *Storage) createTables() error {
 	star_class TEXT NOT NULL,
 	star_color TEXT NOT NULL,
 	star_description TEXT NOT NULL,
+	peer_address TEXT NOT NULL DEFAULT '',
 	updated_at INTEGER NOT NULL
 	);
 
@@ -503,11 +504,11 @@ func (s *Storage) SavePeerSystem(sys *System) error {
 		INSERT OR REPLACE INTO peer_systems (
 			id, name, x, y, z,
 			star_class, star_color, star_description,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			peer_address, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
 		sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
-		time.Now().Unix())
+		sys.PeerAddress, time.Now().Unix())
 	return err
 }
 
@@ -518,11 +519,11 @@ func (s *Storage) GetPeerSystem(systemID uuid.UUID) (*System, error) {
 	var updatedAt int64
 
 	err := s.db.QueryRow(`
-		SELECT id, name, x, y, z, star_class, star_color, star_description, updated_at
+		SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, updated_at
 		FROM peer_systems WHERE id = ?
 	`, systemID.String()).Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
 		&sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
-		&updatedAt)
+		&sys.PeerAddress, &updatedAt)
 
 	if err != nil {
 		return nil, err
@@ -839,9 +840,8 @@ func (s *Storage) CountKnownSystems() int {
 // GetAllPeerSystems returns all cached peer system info (not just direct peers)
 func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     rows, err := s.db.Query(`
-        SELECT ps.id, ps.name, ps.x, ps.y, ps.z, ps.star_class, ps.star_color, ps.star_description, p.address
-        FROM peer_systems ps
-        LEFT JOIN peers p ON ps.id = p.system_id
+        SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address
+        FROM peer_systems
     `)
     if err != nil {
         return nil, err
@@ -852,7 +852,7 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     for rows.Next() {
         var sys System
         var idStr string
-        var peerAddress sql.NullString
+        var peerAddress string
 
         err := rows.Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
             &sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
@@ -862,9 +862,7 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
         }
 
         sys.ID = uuid.MustParse(idStr)
-        if peerAddress.Valid {
-            sys.PeerAddress = peerAddress.String
-        }
+        sys.PeerAddress = peerAddress
         systems = append(systems, &sys)
     }
 
