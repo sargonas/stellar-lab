@@ -224,9 +224,12 @@ const indexTemplate = `<!DOCTYPE html>
         .subtitle { color: #888; margin-bottom: 30px; }
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            grid-template-columns: repeat(3, 1fr);
             gap: 20px;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
+        }
+        .grid-full {
+            grid-column: 1 / -1;
         }
         .card {
             background: rgba(255,255,255,0.05);
@@ -270,7 +273,7 @@ const indexTemplate = `<!DOCTYPE html>
         .coords { font-family: monospace; color: #888; font-size: 0.9em; }
         #galaxy-map {
             width: 100%;
-            height: 400px;
+            height: 600px;
             background: rgba(0,0,0,0.3);
             border-radius: 12px;
             position: relative;
@@ -381,7 +384,7 @@ const indexTemplate = `<!DOCTYPE html>
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card grid-full">
                 <h2>Galaxy Map ({{.TotalSystems}} systems)</h2>
                 <div id="galaxy-map"></div>
             </div>
