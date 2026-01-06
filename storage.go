@@ -1117,6 +1117,7 @@ func (s *Storage) getSystemName(systemID string) string {
 // GetCreditBalance retrieves the credit balance for a system
 func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 	var balance CreditBalance
+	var updatedAt int64 // unused but needed for scan
 	err := s.db.QueryRow(`
 		SELECT system_id, balance, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at
 		FROM credit_balance WHERE system_id = ?
@@ -1128,7 +1129,7 @@ func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 		&balance.TotalReceived,
 		&balance.LastUpdated,
 		&balance.LongevityStart,
-		&balance.LastUpdated,
+		&updatedAt,
 	)
 	if err == sql.ErrNoRows {
 		// Return zero balance for new systems

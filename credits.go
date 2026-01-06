@@ -63,8 +63,7 @@ type CreditRank struct {
 	Color     string `json:"color"` // For UI display
 }
 
-// Credit ranks with thresholds designed for slow progression. I'm not married to these and
-//  open to adjustments or an entirely new system
+// Credit ranks with thresholds designed for slow progression
 var CreditRanks = []CreditRank{
 	{Name: "Diamond", Threshold: 8640, Color: "#b9f2ff"},   // ~1 year
 	{Name: "Platinum", Threshold: 4320, Color: "#e5e4e2"}, // ~6 months
@@ -187,7 +186,10 @@ func (cc *CreditCalculator) CalculateEarnedCredits(input CalculationInput) Calcu
 	spanHours := float64(spanSeconds) / 3600.0
 
 	// Expected attestations per hour based on peer count
-	expectedPerHour := float64(input.PeerCount) * 12.0 // Liveness every 5 min
+	// Peers send: liveness pings (~1 per 5min = 12/hr, but only when THEY check us)
+	// Plus announces (~2/hr) and occasional find_node requests
+	// Realistically expect ~4-6 attestations per peer per hour
+	expectedPerHour := float64(input.PeerCount) * 4.0
 
 	// Count attestations and collect timestamps for gap analysis
 	actualCount := 0

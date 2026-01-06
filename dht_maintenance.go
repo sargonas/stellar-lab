@@ -318,6 +318,10 @@ func (dht *DHT) calculateCredits() {
 	calculator := NewCreditCalculator()
 	result := calculator.CalculateEarnedCredits(input)
 
+	if result.CreditsEarned == 0 && len(attestations) > 0 {
+		log.Printf("Credit calculation: %d attestations but 0 credits (insufficient uptime ratio)", len(attestations))
+	}
+
 	if result.CreditsEarned > 0 {
 		// Update balance
 		balance.Balance += result.CreditsEarned
