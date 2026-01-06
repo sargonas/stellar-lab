@@ -837,6 +837,13 @@ const indexTemplate = `<!DOCTYPE html>
             const systemById = {};
             allSystems.forEach(s => { systemById[s.id] = s; });
 
+            // Labels container
+            const labelsContainer = document.createElement('div');
+            labelsContainer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:hidden;';
+            container.appendChild(labelsContainer);
+            
+            const labelElements = [];
+
             // Add stars
             allSystems.forEach(sys => {
                 const isSelf = sys.id === selfSystem.id;
@@ -847,19 +854,14 @@ const indexTemplate = `<!DOCTYPE html>
                 scene.add(star);
                 starMeshes.push(star);
                 
-                // Add glow ring for self
-                if (isSelf) {
-                    const ringGeo = new THREE.RingGeometry(25, 35, 32);
-                    const ringMat = new THREE.MeshBasicMaterial({ 
-                        color: 0x60a5fa, 
-                        transparent: true, 
-                        opacity: 0.3,
-                        side: THREE.DoubleSide
-                    });
-                    const ring = new THREE.Mesh(ringGeo, ringMat);
-                    ring.position.copy(star.position);
-                    scene.add(ring);
-                }
+                // Create HTML label
+                const label = document.createElement('div');
+                label.textContent = sys.name;
+                label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
+                label.style.color = isSelf ? '#60a5fa' : '#888';
+                if (isSelf) label.style.fontWeight = '500';
+                labelsContainer.appendChild(label);
+                labelElements.push({ element: label, position: star.position, isSelf: isSelf });
             });
 
             // Add connection lines
@@ -935,6 +937,24 @@ const indexTemplate = `<!DOCTYPE html>
             function animate() {
                 requestAnimationFrame(animate);
                 controls.update();
+                
+                // Update label positions
+                const widthHalf = width / 2;
+                const heightHalf = height / 2;
+                labelElements.forEach(item => {
+                    const pos = item.position.clone();
+                    pos.project(camera);
+                    
+                    // Check if in front of camera
+                    if (pos.z < 1) {
+                        item.element.style.display = 'block';
+                        item.element.style.left = (pos.x * widthHalf + widthHalf) + 'px';
+                        item.element.style.top = (-pos.y * heightHalf + heightHalf + 15) + 'px';
+                    } else {
+                        item.element.style.display = 'none';
+                    }
+                });
+                
                 renderer.render(scene, camera);
             }
             animate();
