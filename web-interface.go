@@ -33,7 +33,6 @@ type WebInterfaceData struct {
     NodeHealthClass   string
     RoutingTableSize  int
     CacheSize         int
-    ActiveBuckets     int
     // Stellar Credits
     CreditBalance     int64
     CreditRank        string
@@ -110,14 +109,6 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     // Get all cached systems (known galaxy)
     allSystems := rt.GetAllCachedSystems()
 
-    // Count active buckets
-    activeBuckets := 0
-    for i := 0; i < IDBits; i++ {
-        if len(rt.GetBucketNodes(i)) > 0 {
-            activeBuckets++
-        }
-    }
-
     // Get attestation count (use GetDatabaseStats)
     dbStats, _ := w.storage.GetDatabaseStats()
     attestationCount := 0
@@ -186,7 +177,6 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         NodeHealthClass:  healthClass,
         RoutingTableSize: rtSize,
         CacheSize:        rt.GetCacheSize(),
-        ActiveBuckets:    activeBuckets,
         // Credits
         CreditBalance:     creditBalance,
         CreditRank:        creditRank,
@@ -494,10 +484,6 @@ const indexTemplate = `<!DOCTYPE html>
                 <div class="stat-row">
                     <span class="stat-label">Routing Table</span>
                     <span class="stat-value">{{.RoutingTableSize}} nodes</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Active Buckets</span>
-                    <span class="stat-value">{{.ActiveBuckets}} / 128</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">System Cache</span>
