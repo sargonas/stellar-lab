@@ -18,10 +18,6 @@ type StarType struct {
 	Luminosity  float64 `json:"luminosity"`   // Relative to Sol
 }
 
-// GenesisBlackHoleID is the only system that can be a supermassive black hole
-// This is the UUID of the first seed node at the galactic core (0,0,0)
-var GenesisBlackHoleID = uuid.MustParse("f467e75d-00b8-5ac7-9f0f-4e7cd1c8eb20")
-
 // MultiStarSystem represents the stellar composition of a system
 type MultiStarSystem struct {
 	Primary   StarType   `json:"primary"`             // Primary star
@@ -115,30 +111,11 @@ func generateSingleStar(seed uint64) StarType {
 }
 
 // GenerateMultiStarSystem creates a deterministic multi-star system from UUID
-// Real galaxy distribution:
+// Distribution:
 // - Single stars: ~50%
 // - Binary systems: ~40%
 // - Trinary systems: ~10%
-// - Higher multiples: <1% (we'll ignore these)
-// Special case: Genesis black hole at galactic core
 func (s *System) GenerateMultiStarSystem() {
-	// Check if this is the genesis black hole
-	if s.ID == GenesisBlackHoleID {
-		s.Stars = MultiStarSystem{
-			Primary: StarType{
-				Class:       "X",
-				Description: "Supermassive Black Hole",
-				Color:       "#000000",
-				Temperature: 0,
-				Luminosity:  0,
-			},
-			Count: 1,
-		}
-		// Force origin coordinates for the galactic core
-		s.X, s.Y, s.Z = 0, 0, 0
-		return
-	}
-
 	// Determine if single, binary, or trinary
 	systemTypeSeed := s.DeterministicSeed("system_type")
 	systemTypeRoll := systemTypeSeed % 100

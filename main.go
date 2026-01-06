@@ -86,10 +86,7 @@ func main() {
 
 		// Generate coordinates (will be deterministic since no sponsor yet)
 		// Real coordinates get assigned during bootstrap when we find a sponsor
-		// Skip for black hole - it's already at 0,0,0
-		if system.Stars.Primary.Class != "X" {
-			system.GenerateCoordinates(nil)
-		}
+		system.GenerateCoordinates(nil)
 
 		// Save to database
 		if err := storage.SaveSystem(system); err != nil {
