@@ -207,6 +207,23 @@ func (msg *DHTMessage) Validate() error {
 		return &DHTError{Code: ErrCodeInvalidAttestation, Message: "invalid attestation signature"}
 	}
 
+	if msg.Attestation.FromSystemID != msg.FromSystem.ID {
+	    return &DHTError{Code: ErrCodeInvalidAttestation, Message: "attestation sender mismatch"}
+	}
+
+	if !msg.Attestation.IsTimestampValid(5 * time.Minute) {
+        return &DHTError{Code: ErrCodeInvalidAttestation, Message: "attestation timestamp out of range"}
+    }
+
+    if len(msg.FromSystem.Name) > 64 {
+    	return &DHTError{Code: ErrCodeInvalidMessage, Message: "system name too long"}
+	}
+
+	// Verify star configuration matches what the UUID should produce
+	if !ValidateStarSystem(msg.FromSystem) {
+		return &DHTError{Code: ErrCodeInvalidMessage, Message: "star system configuration invalid for UUID"}
+	}
+
 	switch msg.Type {
 	case MessageTypePing:
 		// No additional validation needed

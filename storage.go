@@ -88,6 +88,7 @@ func (s *Storage) createTables() error {
 		last_seen_at INTEGER NOT NULL,
 		address TEXT NOT NULL,
 		peer_address TEXT NOT NULL,
+		sponsor_id TEXT,
 		-- Cryptographic identity (keys stored as base64)
 		public_key TEXT NOT NULL,
 		private_key TEXT NOT NULL
@@ -124,6 +125,7 @@ func (s *Storage) createTables() error {
 	star_color TEXT NOT NULL,
 	star_description TEXT NOT NULL,
 	peer_address TEXT NOT NULL DEFAULT '',
+	sponsor_id TEXT,
 	updated_at INTEGER NOT NULL
 	);
 
@@ -184,16 +186,64 @@ func (s *Storage) createTables() error {
 		timestamp INTEGER NOT NULL,
 		signature TEXT NOT NULL,
 		public_key TEXT NOT NULL,
+		proof_hash TEXT,
 		created_at INTEGER NOT NULL
+	);
+
+	-- Verified transfers from other systems (for double-spend prevention)
+	CREATE TABLE IF NOT EXISTS verified_transfers (
+		id TEXT PRIMARY KEY,
+		from_system_id TEXT NOT NULL,
+		to_system_id TEXT NOT NULL,
+		amount INTEGER NOT NULL,
+		timestamp INTEGER NOT NULL,
+		signature TEXT NOT NULL,
+		proof_hash TEXT NOT NULL,
+		verified_at INTEGER NOT NULL
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_credit_transfers_from ON credit_transfers(from_system_id);
 	CREATE INDEX IF NOT EXISTS idx_credit_transfers_to ON credit_transfers(to_system_id);
 	CREATE INDEX IF NOT EXISTS idx_credit_transfers_timestamp ON credit_transfers(timestamp);
+	CREATE INDEX IF NOT EXISTS idx_verified_transfers_from ON verified_transfers(from_system_id);
+	CREATE INDEX IF NOT EXISTS idx_verified_transfers_to ON verified_transfers(to_system_id);
 	`
 
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Run migrations for existing databases
+	return s.runMigrations()
+}
+
+// runMigrations handles schema updates for existing databases
+func (s *Storage) runMigrations() error {
+	// Add sponsor_id to system table if it doesn't exist
+	s.db.Exec("ALTER TABLE system ADD COLUMN sponsor_id TEXT")
+	
+	// Add sponsor_id to peer_systems table if it doesn't exist
+	s.db.Exec("ALTER TABLE peer_systems ADD COLUMN sponsor_id TEXT")
+	
+	// Add proof_hash to credit_transfers if it doesn't exist
+	s.db.Exec("ALTER TABLE credit_transfers ADD COLUMN proof_hash TEXT")
+	
+	// Create verified_transfers table if it doesn't exist
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS verified_transfers (
+		id TEXT PRIMARY KEY,
+		from_system_id TEXT NOT NULL,
+		to_system_id TEXT NOT NULL,
+		amount INTEGER NOT NULL,
+		timestamp INTEGER NOT NULL,
+		signature TEXT NOT NULL,
+		proof_hash TEXT NOT NULL,
+		verified_at INTEGER NOT NULL
+	)`)
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_verified_transfers_from ON verified_transfers(from_system_id)")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_verified_transfers_to ON verified_transfers(to_system_id)")
+	
+	return nil
 }
 
 // SaveSystem persists the local system info
@@ -240,6 +290,13 @@ func (s *Storage) SaveSystem(sys *System) error {
 		privateKey = base64.StdEncoding.EncodeToString(sys.Keys.PrivateKey)
 	}
 
+	// Handle nullable sponsor_id
+	var sponsorID *string
+	if sys.SponsorID != nil {
+		s := sys.SponsorID.String()
+		sponsorID = &s
+	}
+
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO system (
 			id, name, x, y, z,
@@ -247,16 +304,16 @@ func (s *Storage) SaveSystem(sys *System) error {
 			secondary_class, secondary_description, secondary_color, secondary_temperature, secondary_luminosity,
 			tertiary_class, tertiary_description, tertiary_color, tertiary_temperature, tertiary_luminosity,
 			is_binary, is_trinary, star_count,
-			created_at, last_seen_at, address, peer_address, public_key, private_key
+			created_at, last_seen_at, address, peer_address, sponsor_id, public_key, private_key
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
 		sys.Stars.Primary.Class, sys.Stars.Primary.Description, sys.Stars.Primary.Color,
 		sys.Stars.Primary.Temperature, sys.Stars.Primary.Luminosity,
 		secondaryClass, secondaryDesc, secondaryColor, secondaryTemp, secondaryLum,
 		tertiaryClass, tertiaryDesc, tertiaryColor, tertiaryTemp, tertiaryLum,
 		isBinary, isTrinary, sys.Stars.Count,
-		sys.CreatedAt.Unix(), sys.LastSeenAt.Unix(), sys.Address, sys.PeerAddress, publicKey, privateKey)
+		sys.CreatedAt.Unix(), sys.LastSeenAt.Unix(), sys.Address, sys.PeerAddress, sponsorID, publicKey, privateKey)
 	return err
 }
 
@@ -275,7 +332,7 @@ func (s *Storage) LoadSystem() (*System, error) {
 	var tertiaryClass, tertiaryDesc, tertiaryColor sql.NullString
 	var tertiaryTemp sql.NullInt64
 	var tertiaryLum sql.NullFloat64
-	var publicKeyB64, privateKeyB64 sql.NullString
+	var publicKeyB64, privateKeyB64, sponsorIDStr sql.NullString
 
 	err := s.db.QueryRow(`
 		SELECT id, name, x, y, z,
@@ -283,7 +340,7 @@ func (s *Storage) LoadSystem() (*System, error) {
 			secondary_class, secondary_description, secondary_color, secondary_temperature, secondary_luminosity,
 			tertiary_class, tertiary_description, tertiary_color, tertiary_temperature, tertiary_luminosity,
 			is_binary, is_trinary, star_count,
-			created_at, last_seen_at, address, peer_address, public_key, private_key
+			created_at, last_seen_at, address, peer_address, sponsor_id, public_key, private_key
 		FROM system LIMIT 1
 	`).Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
 		&sys.Stars.Primary.Class, &sys.Stars.Primary.Description, &sys.Stars.Primary.Color,
@@ -291,7 +348,7 @@ func (s *Storage) LoadSystem() (*System, error) {
 		&secondaryClass, &secondaryDesc, &secondaryColor, &secondaryTemp, &secondaryLum,
 		&tertiaryClass, &tertiaryDesc, &tertiaryColor, &tertiaryTemp, &tertiaryLum,
 		&isBinary, &isTrinary, &starCount,
-		&createdAt, &lastSeenAt, &sys.Address, &sys.PeerAddress, &publicKeyB64, &privateKeyB64)
+		&createdAt, &lastSeenAt, &sys.Address, &sys.PeerAddress, &sponsorIDStr, &publicKeyB64, &privateKeyB64)
 
 	if err != nil {
 		return nil, err
@@ -300,6 +357,12 @@ func (s *Storage) LoadSystem() (*System, error) {
 	sys.ID = uuid.MustParse(idStr)
 	sys.CreatedAt = time.Unix(createdAt, 0)
 	sys.LastSeenAt = time.Unix(lastSeenAt, 0)
+
+	// Load sponsor ID if present
+	if sponsorIDStr.Valid && sponsorIDStr.String != "" {
+		sponsorID := uuid.MustParse(sponsorIDStr.String)
+		sys.SponsorID = &sponsorID
+	}
 
 	sys.Stars.IsBinary = isBinary == 1
 	sys.Stars.IsTrinary = isTrinary == 1
@@ -500,15 +563,22 @@ func (s *Storage) IncrementPeerMessageCount(peerID uuid.UUID) error {
 
 // SavePeerSystem caches a peer's full system info
 func (s *Storage) SavePeerSystem(sys *System) error {
+	// Handle nullable sponsor_id
+	var sponsorID *string
+	if sys.SponsorID != nil {
+		s := sys.SponsorID.String()
+		sponsorID = &s
+	}
+
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO peer_systems (
 			id, name, x, y, z,
 			star_class, star_color, star_description,
-			peer_address, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			peer_address, sponsor_id, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
 		sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
-		sys.PeerAddress, time.Now().Unix())
+		sys.PeerAddress, sponsorID, time.Now().Unix())
 	return err
 }
 
@@ -517,19 +587,27 @@ func (s *Storage) GetPeerSystem(systemID uuid.UUID) (*System, error) {
 	var sys System
 	var idStr string
 	var updatedAt int64
+	var sponsorIDStr sql.NullString
 
 	err := s.db.QueryRow(`
-		SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, updated_at
+		SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, sponsor_id, updated_at
 		FROM peer_systems WHERE id = ?
 	`, systemID.String()).Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
 		&sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
-		&sys.PeerAddress, &updatedAt)
+		&sys.PeerAddress, &sponsorIDStr, &updatedAt)
 
 	if err != nil {
 		return nil, err
 	}
 
 	sys.ID = uuid.MustParse(idStr)
+	
+	// Load sponsor ID if present
+	if sponsorIDStr.Valid && sponsorIDStr.String != "" {
+		sponsorID := uuid.MustParse(sponsorIDStr.String)
+		sys.SponsorID = &sponsorID
+	}
+	
 	return &sys, nil
 }
 
@@ -678,30 +756,12 @@ func (s *Storage) CompactAttestations(keepDays int) (*CompactionStats, error) {
         stats.SummariesCreated++
     }
 
-    // Step 3: Delete old attestations, but keep first and last per peer
-    // First, identify the first and last attestation IDs per peer to preserve
-    _, err = tx.Exec(`
-        DELETE FROM attestations
-        WHERE timestamp < ?
-        AND rowid NOT IN (
-            -- Keep first attestation per peer
-            SELECT MIN(rowid) FROM attestations
-            GROUP BY from_system_id, to_system_id
-        )
-        AND rowid NOT IN (
-            -- Keep last attestation per peer
-            SELECT MAX(rowid) FROM attestations
-            GROUP BY from_system_id, to_system_id
-        )
-    `, cutoff)
-    if err != nil {
-        return nil, fmt.Errorf("failed to delete old attestations: %w", err)
-    }
-
-    // Get count of deleted rows
-    var remainingCount int
-    tx.QueryRow("SELECT changes()").Scan(&stats.AttestationsDeleted)
-    tx.QueryRow("SELECT COUNT(*) FROM attestations").Scan(&remainingCount)
+    // Step 3: Previously deleted old attestations here, but we now keep them
+    // permanently for credit transfer proofs. Summaries are still created for
+    // fast UI queries, but raw attestations are the source of truth for validation.
+    //
+    // Storage impact: ~200 bytes/attestation * ~100/day = ~7MB/year per active node
+    // This is acceptable for the security benefit of verifiable credit transfers.
 
     // Commit transaction
     if err := tx.Commit(); err != nil {
@@ -840,7 +900,7 @@ func (s *Storage) CountKnownSystems() int {
 // GetAllPeerSystems returns all cached peer system info (not just direct peers)
 func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     rows, err := s.db.Query(`
-        SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address
+        SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, sponsor_id
         FROM peer_systems
     `)
     if err != nil {
@@ -853,16 +913,24 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
         var sys System
         var idStr string
         var peerAddress string
+        var sponsorIDStr sql.NullString
 
         err := rows.Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
             &sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
-            &peerAddress)
+            &peerAddress, &sponsorIDStr)
         if err != nil {
             continue
         }
 
         sys.ID = uuid.MustParse(idStr)
         sys.PeerAddress = peerAddress
+        
+        // Load sponsor ID if present
+        if sponsorIDStr.Valid && sponsorIDStr.String != "" {
+            sponsorID := uuid.MustParse(sponsorIDStr.String)
+            sys.SponsorID = &sponsorID
+        }
+        
         systems = append(systems, &sys)
     }
 
@@ -1133,13 +1201,18 @@ func (s *Storage) GetAttestationsSince(systemID uuid.UUID, since int64) ([]*Atte
 	return attestations, nil
 }
 
-// SaveCreditTransfer persists a credit transfer (for future use)
+// SaveCreditTransfer persists a credit transfer
 func (s *Storage) SaveCreditTransfer(transfer *CreditTransfer) error {
+	var proofHash string
+	if transfer.Proof != nil {
+		proofHash = transfer.Proof.ProofHash()
+	}
+	
 	_, err := s.db.Exec(`
-		INSERT INTO credit_transfers (id, from_system_id, to_system_id, amount, memo, timestamp, signature, public_key, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO credit_transfers (id, from_system_id, to_system_id, amount, memo, timestamp, signature, public_key, proof_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, transfer.ID.String(), transfer.FromSystemID.String(), transfer.ToSystemID.String(),
-		transfer.Amount, transfer.Memo, transfer.Timestamp, transfer.Signature, transfer.PublicKey, time.Now().Unix())
+		transfer.Amount, transfer.Memo, transfer.Timestamp, transfer.Signature, transfer.PublicKey, proofHash, time.Now().Unix())
 	return err
 }
 
@@ -1162,6 +1235,118 @@ func (s *Storage) GetCreditTransfers(systemID uuid.UUID, limit int) ([]*CreditTr
 		var t CreditTransfer
 		var idStr, fromStr, toStr string
 		if err := rows.Scan(&idStr, &fromStr, &toStr, &t.Amount, &t.Memo, &t.Timestamp, &t.Signature, &t.PublicKey); err != nil {
+			continue
+		}
+		t.ID, _ = uuid.Parse(idStr)
+		t.FromSystemID, _ = uuid.Parse(fromStr)
+		t.ToSystemID, _ = uuid.Parse(toStr)
+		transfers = append(transfers, &t)
+	}
+
+	return transfers, nil
+}
+
+// GetAllAttestationsForSystem retrieves all attestations where the system was the recipient
+// Used for building credit proofs
+func (s *Storage) GetAllAttestationsForSystem(systemID uuid.UUID) ([]*Attestation, error) {
+	rows, err := s.db.Query(`
+		SELECT from_system_id, to_system_id, timestamp, message_type, signature, public_key
+		FROM attestations
+		WHERE to_system_id = ?
+		ORDER BY timestamp DESC
+	`, systemID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attestations []*Attestation
+	for rows.Next() {
+		var fromID, toID, msgType, sig, pubKey string
+		var timestamp int64
+		if err := rows.Scan(&fromID, &toID, &timestamp, &msgType, &sig, &pubKey); err != nil {
+			continue
+		}
+
+		fromUUID, _ := uuid.Parse(fromID)
+		toUUID, _ := uuid.Parse(toID)
+
+		attestations = append(attestations, &Attestation{
+			FromSystemID: fromUUID,
+			ToSystemID:   toUUID,
+			Timestamp:    timestamp,
+			MessageType:  msgType,
+			Signature:    sig,
+			PublicKey:    pubKey,
+		})
+	}
+
+	return attestations, nil
+}
+
+// SaveVerifiedTransfer stores a transfer that we've verified from another system
+func (s *Storage) SaveVerifiedTransfer(transfer *CreditTransfer) error {
+	proofHash := ""
+	if transfer.Proof != nil {
+		proofHash = transfer.Proof.ProofHash()
+	}
+	
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO verified_transfers (id, from_system_id, to_system_id, amount, timestamp, signature, proof_hash, verified_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, transfer.ID.String(), transfer.FromSystemID.String(), transfer.ToSystemID.String(),
+		transfer.Amount, transfer.Timestamp, transfer.Signature, proofHash, time.Now().Unix())
+	return err
+}
+
+// GetVerifiedTransfersFrom retrieves all verified transfers sent by a system
+// Used for double-spend detection
+func (s *Storage) GetVerifiedTransfersFrom(systemID uuid.UUID) ([]*CreditTransfer, error) {
+	rows, err := s.db.Query(`
+		SELECT id, from_system_id, to_system_id, amount, timestamp, signature
+		FROM verified_transfers
+		WHERE from_system_id = ?
+		ORDER BY timestamp DESC
+	`, systemID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var transfers []*CreditTransfer
+	for rows.Next() {
+		var t CreditTransfer
+		var idStr, fromStr, toStr string
+		if err := rows.Scan(&idStr, &fromStr, &toStr, &t.Amount, &t.Timestamp, &t.Signature); err != nil {
+			continue
+		}
+		t.ID, _ = uuid.Parse(idStr)
+		t.FromSystemID, _ = uuid.Parse(fromStr)
+		t.ToSystemID, _ = uuid.Parse(toStr)
+		transfers = append(transfers, &t)
+	}
+
+	return transfers, nil
+}
+
+// GetAllVerifiedTransfers retrieves all verified transfers we know about
+// Used for comprehensive double-spend checking
+func (s *Storage) GetAllVerifiedTransfers() ([]*CreditTransfer, error) {
+	rows, err := s.db.Query(`
+		SELECT id, from_system_id, to_system_id, amount, timestamp, signature
+		FROM verified_transfers
+		ORDER BY timestamp DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var transfers []*CreditTransfer
+	for rows.Next() {
+		var t CreditTransfer
+		var idStr, fromStr, toStr string
+		if err := rows.Scan(&idStr, &fromStr, &toStr, &t.Amount, &t.Timestamp, &t.Signature); err != nil {
 			continue
 		}
 		t.ID, _ = uuid.Parse(idStr)

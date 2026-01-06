@@ -149,8 +149,9 @@ func main() {
 				sponsor := peers[0]
 				log.Printf("Updating coordinates to cluster near %s", sponsor.Name)
 				system.GenerateCoordinates(sponsor)
+				system.SponsorID = &sponsor.ID
 				storage.SaveSystem(system)
-				log.Printf("New coordinates: (%.2f, %.2f, %.2f)", system.X, system.Y, system.Z)
+				log.Printf("New coordinates: (%.2f, %.2f, %.2f), sponsored by %s", system.X, system.Y, system.Z, sponsor.Name)
 			}
 		}
 	}()

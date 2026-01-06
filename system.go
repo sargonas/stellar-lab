@@ -40,7 +40,8 @@ type System struct {
 	LastSeenAt  time.Time         `json:"last_seen_at"`
 	Address     string            `json:"address"` // network address (host:port)
 	Keys        *KeyPair          `json:"-"`       // Cryptographic keys (never serialized)
-	PeerAddress string         `json:"peer_address"` // Peer mesh address
+	PeerAddress string            `json:"peer_address"` // Peer mesh address
+	SponsorID   *uuid.UUID        `json:"sponsor_id,omitempty"` // Node that sponsored our network entry
 }
 
 // generateSingleStar creates a deterministic star from a seed
@@ -185,6 +186,25 @@ func (s *System) GenerateMultiStarSystem() {
 	}
 }
 
+// ValidateStarSystem checks if a system's stars match what its UUID should deterministically produce
+// Returns true if valid, false if the star configuration appears to be spoofed
+func ValidateStarSystem(sys *System) bool {
+	// Skip validation for class X (genesis black hole - special case)
+	if sys.Stars.Primary.Class == "X" {
+		// Only the genesis UUID is allowed to have class X
+		return sys.ID.String() == "f467e75d-00b8-5ac7-9f0f-4e7cd1c8eb20"
+	}
+
+	// Generate expected star configuration from UUID
+	expected := &System{ID: sys.ID}
+	expected.GenerateMultiStarSystem()
+
+	// Compare primary class and multi-star status
+	return sys.Stars.Primary.Class == expected.Stars.Primary.Class &&
+		sys.Stars.IsBinary == expected.Stars.IsBinary &&
+		sys.Stars.IsTrinary == expected.Stars.IsTrinary
+}
+
 // GenerateCoordinates creates spatial coordinates
 // If nearbySystem is provided, clusters near it. Otherwise uses deterministic placement.
 func (s *System) GenerateCoordinates(nearbySystem *System) {
@@ -215,43 +235,105 @@ func (s *System) GenerateDeterministicCoordinates() {
 	s.Z = (float64(zSeed) / maxUint64 * 20000) - 10000
 }
 
-// GenerateClusteredCoordinates places this system near another system
-// Uses UUID to deterministically generate offset while keeping systems clustered
-func (s *System) GenerateClusteredCoordinates(nearbySystem *System) {
-	hash := sha256.Sum256(s.ID[:])
+// GenerateClusteredCoordinates places this system near its sponsor
+// Uses Hash(UUID + SponsorID) to deterministically generate offset
+// This makes coordinates verifiable by any node that knows both UUIDs
+func (s *System) GenerateClusteredCoordinates(sponsor *System) {
+	// Hash our UUID + sponsor's UUID together for deterministic positioning
+	combined := append(s.ID[:], sponsor.ID[:]...)
+	hash := sha256.Sum256(combined)
 	
-	// Use hash to generate deterministic offsets
-	// Smaller range (100-500 units) to keep systems clustered
-	xSeed := binary.BigEndian.Uint64(hash[0:8])
-	ySeed := binary.BigEndian.Uint64(hash[8:16])
-	zSeed := binary.BigEndian.Uint64(hash[16:24])
+	// Use hash to generate deterministic spherical coordinates
+	// This gives more natural distribution than axis-aligned offsets
+	distSeed := binary.BigEndian.Uint64(hash[0:8])
+	thetaSeed := binary.BigEndian.Uint64(hash[8:16])  // azimuth angle
+	phiSeed := binary.BigEndian.Uint64(hash[16:24])   // polar angle
 	
 	maxUint64 := float64(math.MaxUint64)
 	
-	// Generate offsets in range of 100-500 units
-	minOffset := 100.0
-	maxOffset := 500.0
-	offsetRange := maxOffset - minOffset
+	// Distance: 100-500 units from sponsor
+	distance := (float64(distSeed)/maxUint64)*400.0 + 100.0
 	
-	xOffset := (float64(xSeed)/maxUint64*offsetRange + minOffset)
-	yOffset := (float64(ySeed)/maxUint64*offsetRange + minOffset)
-	zOffset := (float64(zSeed)/maxUint64*offsetRange + minOffset)
+	// Spherical coordinates for even distribution
+	theta := (float64(thetaSeed) / maxUint64) * 2 * math.Pi        // 0 to 2π
+	phi := math.Acos(2*(float64(phiSeed)/maxUint64) - 1)           // 0 to π (uniform on sphere)
 	
-	// Randomly make offsets negative based on hash
-	if xSeed%2 == 0 {
-		xOffset = -xOffset
-	}
-	if ySeed%2 == 0 {
-		yOffset = -yOffset
-	}
-	if zSeed%2 == 0 {
-		zOffset = -zOffset
+	// Convert to Cartesian offsets
+	xOffset := distance * math.Sin(phi) * math.Cos(theta)
+	yOffset := distance * math.Sin(phi) * math.Sin(theta)
+	zOffset := distance * math.Cos(phi)
+	
+	// Apply offsets to sponsor's coordinates
+	s.X = sponsor.X + xOffset
+	s.Y = sponsor.Y + yOffset
+	s.Z = sponsor.Z + zOffset
+	
+	// Store sponsor reference
+	s.SponsorID = &sponsor.ID
+}
+
+// CalculateExpectedCoordinates computes where a system should be based on UUID + Sponsor
+// Used for validation - any node can verify coordinates are legitimate
+func CalculateExpectedCoordinates(systemID, sponsorID uuid.UUID, sponsorX, sponsorY, sponsorZ float64) (x, y, z float64) {
+	combined := append(systemID[:], sponsorID[:]...)
+	hash := sha256.Sum256(combined)
+	
+	distSeed := binary.BigEndian.Uint64(hash[0:8])
+	thetaSeed := binary.BigEndian.Uint64(hash[8:16])
+	phiSeed := binary.BigEndian.Uint64(hash[16:24])
+	
+	maxUint64 := float64(math.MaxUint64)
+	
+	distance := (float64(distSeed)/maxUint64)*400.0 + 100.0
+	theta := (float64(thetaSeed) / maxUint64) * 2 * math.Pi
+	phi := math.Acos(2*(float64(phiSeed)/maxUint64) - 1)
+	
+	xOffset := distance * math.Sin(phi) * math.Cos(theta)
+	yOffset := distance * math.Sin(phi) * math.Sin(theta)
+	zOffset := distance * math.Cos(phi)
+	
+	return sponsorX + xOffset, sponsorY + yOffset, sponsorZ + zOffset
+}
+
+// ValidateCoordinates checks if a system's coordinates match expected position
+// Returns true if valid (or unverifiable), false if definitely spoofed
+// lookupSponsor returns sponsor System or nil if unknown
+func ValidateCoordinates(sys *System, lookupSponsor func(uuid.UUID) *System) bool {
+	// No sponsor = must be genesis
+	if sys.SponsorID == nil {
+		// Only genesis (class X) is allowed without a sponsor
+		if sys.Stars.Primary.Class == "X" {
+			return sys.X == 0 && sys.Y == 0 && sys.Z == 0
+		}
+		// All other nodes must have a sponsor
+		return false
 	}
 	
-	// Apply offsets to nearby system's coordinates
-	s.X = nearbySystem.X + xOffset
-	s.Y = nearbySystem.Y + yOffset
-	s.Z = nearbySystem.Z + zOffset
+	// Has sponsor - look them up
+	sponsor := lookupSponsor(*sys.SponsorID)
+	if sponsor == nil {
+		// Can't verify - sponsor unknown to us
+		// Accept for now (lenient) - we'll learn sponsor eventually
+		return true
+	}
+	
+	// Calculate expected position
+	expX, expY, expZ := CalculateExpectedCoordinates(sys.ID, *sys.SponsorID, sponsor.X, sponsor.Y, sponsor.Z)
+	
+	return coordsApproxEqual(sys.X, expX) &&
+		coordsApproxEqual(sys.Y, expY) &&
+		coordsApproxEqual(sys.Z, expZ)
+}
+
+// coordsApproxEqual checks if two coordinates are approximately equal
+// Allows for small floating point differences
+func coordsApproxEqual(a, b float64) bool {
+	const epsilon = 0.01 // Allow tiny rounding differences
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff < epsilon
 }
 
 // DistanceTo calculates Euclidean distance to another system

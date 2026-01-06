@@ -35,7 +35,7 @@ import (
 // Grace period: 15 minutes - short gaps don't count as downtime
 // Longevity reset: 30 minutes - longer gaps reset your streak
 //
-// Rank thresholds (designed for weeks/months progression):
+// Rank thresholds:
 // - Unranked:  0 credits       (new node)
 // - Bronze:    168 credits     (~1 week)
 // - Silver:    720 credits     (~1 month)
@@ -373,16 +373,17 @@ func CalculateBridgeScore(
 // =============================================================================
 
 // CreditTransfer represents a transfer of credits between systems
-// This is designed for future implementation but the structure is ready
+// Includes a proof that allows recipients to verify the sender has sufficient balance
 type CreditTransfer struct {
-	ID            uuid.UUID `json:"id"`              // Unique transfer ID
-	FromSystemID  uuid.UUID `json:"from_system_id"`  // Sender
-	ToSystemID    uuid.UUID `json:"to_system_id"`    // Recipient
-	Amount        int64     `json:"amount"`          // Credits transferred
-	Timestamp     int64     `json:"timestamp"`       // When transfer occurred
-	Memo          string    `json:"memo,omitempty"`  // Optional message
-	Signature     string    `json:"signature"`       // Sender's signature
-	PublicKey     string    `json:"public_key"`      // Sender's public key
+	ID            uuid.UUID     `json:"id"`              // Unique transfer ID
+	FromSystemID  uuid.UUID     `json:"from_system_id"`  // Sender
+	ToSystemID    uuid.UUID     `json:"to_system_id"`    // Recipient
+	Amount        int64         `json:"amount"`          // Credits transferred
+	Timestamp     int64         `json:"timestamp"`       // When transfer occurred
+	Memo          string        `json:"memo,omitempty"`  // Optional message
+	Signature     string        `json:"signature"`       // Sender's signature
+	PublicKey     string        `json:"public_key"`      // Sender's public key
+	Proof         *CreditProof  `json:"proof"`           // Proof of sufficient balance
 }
 
 // NewCreditTransfer creates a new signed credit transfer
@@ -452,47 +453,250 @@ func (t *CreditTransfer) ToJSON() ([]byte, error) {
 // CREDIT PROOF (for verification by other nodes)
 // =============================================================================
 
-// CreditProof is a verifiable proof of a system's credit balance
-// Other nodes can verify this without trusting the claimer
+// CreditProof is a verifiable proof of earned credits
+// Recipients can verify this by recalculating from the included attestations
 type CreditProof struct {
-	SystemID        uuid.UUID         `json:"system_id"`
-	Balance         int64             `json:"balance"`
-	TotalEarned     int64             `json:"total_earned"`
-	Rank            string            `json:"rank"`
+	SystemID     uuid.UUID      `json:"system_id"`
+	ClaimedTotal int64          `json:"claimed_total"`   // Total credits claimed to have earned
+	AsOfTime     int64          `json:"as_of_time"`      // Timestamp this proof was generated
 	
-	// Sampling of recent attestations for verification
-	SampleAttestations []*Attestation `json:"sample_attestations"`
+	// Attestations proving uptime - these are signed by OTHER nodes
+	// Only attestations where ToSystemID == SystemID count (others attesting TO us)
+	Attestations []*Attestation `json:"attestations"`
 	
-	// Recent transfers affecting balance
-	RecentTransfers []*CreditTransfer `json:"recent_transfers,omitempty"`
+	// Previous transfers that affect available balance
+	PriorTransfersSent int64 `json:"prior_transfers_sent"` // Total previously sent
 	
-	Timestamp       int64             `json:"timestamp"`
-	Signature       string            `json:"signature"`
-	PublicKey       string            `json:"public_key"`
+	Signature string `json:"signature"` // Proof signed by the claimer
+	PublicKey string `json:"public_key"`
+}
+
+// ProofHash returns a hash of the proof for reference/storage
+func (p *CreditProof) ProofHash() string {
+	data := fmt.Sprintf("%s:%d:%d:%d",
+		p.SystemID.String(),
+		p.ClaimedTotal,
+		p.AsOfTime,
+		len(p.Attestations),
+	)
+	hash := sha256.Sum256([]byte(data))
+	return base64.StdEncoding.EncodeToString(hash[:])
 }
 
 // GenerateCreditProof creates a verifiable proof of credit balance
-func GenerateCreditProof(system *System, balance *CreditBalance, sampleAttestations []*Attestation) *CreditProof {
+// Includes attestations sufficient to prove the claimed amount
+func GenerateCreditProof(
+	system *System,
+	claimedTotal int64,
+	priorSent int64,
+	attestations []*Attestation,
+) *CreditProof {
 	proof := &CreditProof{
 		SystemID:           system.ID,
-		Balance:            balance.Balance,
-		TotalEarned:        balance.TotalEarned,
-		Rank:               GetRank(balance.Balance).Name,
-		SampleAttestations: sampleAttestations,
-		Timestamp:          time.Now().Unix(),
+		ClaimedTotal:       claimedTotal,
+		AsOfTime:           time.Now().Unix(),
+		Attestations:       attestations,
+		PriorTransfersSent: priorSent,
 		PublicKey:          base64.StdEncoding.EncodeToString(system.Keys.PublicKey),
 	}
 
 	// Sign the proof
 	data := fmt.Sprintf("%s:%d:%d:%d",
 		proof.SystemID.String(),
-		proof.Balance,
-		proof.TotalEarned,
-		proof.Timestamp,
+		proof.ClaimedTotal,
+		proof.AsOfTime,
+		len(proof.Attestations),
 	)
 	hash := sha256.Sum256([]byte(data))
 	signature := ed25519.Sign(system.Keys.PrivateKey, hash[:])
 	proof.Signature = base64.StdEncoding.EncodeToString(signature)
 
 	return proof
+}
+
+// =============================================================================
+// TRANSFER VALIDATION
+// =============================================================================
+
+// CalculateCreditsFromAttestations deterministically calculates earned credits
+// This is a simplified calculation that any node can verify:
+// - 1 credit per hour of attested uptime
+// - Only counts attestations FROM others TO the system (not self-attestations)
+// - No bonuses (they depend on network state at calculation time)
+func CalculateCreditsFromAttestations(attestations []*Attestation, systemID uuid.UUID) int64 {
+	if len(attestations) == 0 {
+		return 0
+	}
+
+	// Filter to only attestations TO this system (from others)
+	var validAttestations []*Attestation
+	for _, att := range attestations {
+		// Must be TO us, not FROM us
+		if att.ToSystemID != systemID {
+			continue
+		}
+		// Must be FROM someone else
+		if att.FromSystemID == systemID {
+			continue
+		}
+		// Must have valid signature
+		if !att.Verify() {
+			continue
+		}
+		validAttestations = append(validAttestations, att)
+	}
+
+	if len(validAttestations) == 0 {
+		return 0
+	}
+
+	// Find time bounds
+	var oldest, newest int64 = validAttestations[0].Timestamp, validAttestations[0].Timestamp
+	for _, att := range validAttestations {
+		if att.Timestamp < oldest {
+			oldest = att.Timestamp
+		}
+		if att.Timestamp > newest {
+			newest = att.Timestamp
+		}
+	}
+
+	// Calculate hours of uptime
+	// Simple model: if you have attestations spanning N hours, you were online N hours
+	spanSeconds := newest - oldest
+	if spanSeconds <= 0 {
+		// Single attestation = 1 hour minimum
+		return 1
+	}
+
+	// 1 credit per hour
+	hours := spanSeconds / 3600
+	if hours < 1 {
+		hours = 1
+	}
+
+	return hours
+}
+
+// ValidateTransferProof validates that a transfer has sufficient proven balance
+// Returns nil if valid, error describing the problem if invalid
+func ValidateTransferProof(transfer *CreditTransfer, knownTransfers []*CreditTransfer) error {
+	// 1. Verify transfer signature
+	if !transfer.Verify() {
+		return fmt.Errorf("invalid transfer signature")
+	}
+
+	// 2. Verify proof exists
+	if transfer.Proof == nil {
+		return fmt.Errorf("missing credit proof")
+	}
+
+	// 3. Verify proof is for the sender
+	if transfer.Proof.SystemID != transfer.FromSystemID {
+		return fmt.Errorf("proof system ID doesn't match sender")
+	}
+
+	// 4. Verify all attestations in proof are from OTHER nodes (not self-signed)
+	for _, att := range transfer.Proof.Attestations {
+		// Must be TO the sender (proving they received attestation)
+		if att.ToSystemID != transfer.FromSystemID {
+			continue // Skip, doesn't help their case
+		}
+		// Must be FROM someone else
+		if att.FromSystemID == transfer.FromSystemID {
+			return fmt.Errorf("proof contains self-attestation")
+		}
+		// Must have valid signature from the other node
+		if !att.Verify() {
+			return fmt.Errorf("proof contains invalid attestation signature")
+		}
+	}
+
+	// 5. Recalculate earned credits from attestations
+	calculatedEarned := CalculateCreditsFromAttestations(
+		transfer.Proof.Attestations,
+		transfer.FromSystemID,
+	)
+
+	if transfer.Proof.ClaimedTotal > calculatedEarned {
+		return fmt.Errorf("claimed earnings (%d) exceed provable amount (%d)",
+			transfer.Proof.ClaimedTotal, calculatedEarned)
+	}
+
+	// 6. Calculate total previously sent (from known transfers)
+	var totalPreviouslySent int64
+	for _, t := range knownTransfers {
+		if t.FromSystemID == transfer.FromSystemID && t.ID != transfer.ID {
+			totalPreviouslySent += t.Amount
+		}
+	}
+
+	// Also add what they claim to have sent (we trust proof for now)
+	if transfer.Proof.PriorTransfersSent > totalPreviouslySent {
+		totalPreviouslySent = transfer.Proof.PriorTransfersSent
+	}
+
+	// 7. Calculate total received (from known transfers)
+	var totalReceived int64
+	for _, t := range knownTransfers {
+		if t.ToSystemID == transfer.FromSystemID {
+			totalReceived += t.Amount
+		}
+	}
+
+	// 8. Check balance: earned + received >= sent + this_transfer
+	availableBalance := calculatedEarned + totalReceived - totalPreviouslySent
+	if transfer.Amount > availableBalance {
+		return fmt.Errorf("insufficient balance: need %d, have %d (earned %d + received %d - sent %d)",
+			transfer.Amount, availableBalance,
+			calculatedEarned, totalReceived, totalPreviouslySent)
+	}
+
+	return nil
+}
+
+// BuildMinimalProof creates a proof with just enough attestations to cover the transfer amount
+// This keeps proof sizes manageable for large histories
+func BuildMinimalProof(
+	system *System,
+	amount int64,
+	priorSent int64,
+	allAttestations []*Attestation,
+) *CreditProof {
+	// Sort attestations by timestamp (newest first for freshest proof)
+	sorted := make([]*Attestation, len(allAttestations))
+	copy(sorted, allAttestations)
+	
+	// Simple sort - newest first
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j].Timestamp > sorted[i].Timestamp {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+
+	// Include attestations until we have enough to prove the needed balance
+	needed := amount + priorSent
+	var included []*Attestation
+	var running int64
+
+	for _, att := range sorted {
+		// Only count attestations TO us from others
+		if att.ToSystemID != system.ID || att.FromSystemID == system.ID {
+			continue
+		}
+		if !att.Verify() {
+			continue
+		}
+
+		included = append(included, att)
+		running = CalculateCreditsFromAttestations(included, system.ID)
+
+		if running >= needed {
+			break
+		}
+	}
+
+	return GenerateCreditProof(system, running, priorSent, included)
 }
