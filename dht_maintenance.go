@@ -82,6 +82,12 @@ func (dht *DHT) checkPeerLiveness() {
 	if dead > 0 {
 		log.Printf("Peer liveness: %d alive, %d unreachable", alive, dead)
 	}
+
+	// Evict nodes that have failed too many times
+	evicted := dht.routingTable.EvictDeadNodes()
+	if evicted > 0 {
+		log.Printf("Evicted %d dead nodes from routing table", evicted)
+	}
 }
 
 // announceToNetwork announces ourselves to the K closest nodes

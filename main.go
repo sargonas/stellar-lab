@@ -84,9 +84,12 @@ func main() {
 		// Generate star system
 		system.GenerateMultiStarSystem()
 
-		// Generate coordinates (will be deterministic since no sponsor yet)
-		// Real coordinates get assigned during bootstrap when we find a sponsor
-		system.GenerateCoordinates(nil)
+		// New nodes start at origin with no sponsor
+		// Real coordinates assigned during bootstrap when we find a sponsor
+		system.X = 0
+		system.Y = 0
+		system.Z = 0
+		system.SponsorID = nil
 
 		// Save to database
 		if err := storage.SaveSystem(system); err != nil {

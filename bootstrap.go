@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // BootstrapConfig holds configuration for the bootstrap process
@@ -104,7 +106,36 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 
 // bootstrapFromPeer bootstraps from a known peer address
 func (dht *DHT) bootstrapFromPeer(address string) error {
-	// Ping the peer to get their system info
+	// If we don't have a sponsor yet, we need to get peer info BEFORE pinging
+	// because the ping will fail coordinate validation without valid coordinates
+	if dht.localSystem.SponsorID == nil && dht.localSystem.Stars.Primary.Class != "X" {
+		// Get peer's system info via HTTP (not DHT ping)
+		systemURL := fmt.Sprintf("http://%s/system", address)
+		resp, err := http.Get(systemURL)
+		if err != nil {
+			return fmt.Errorf("failed to get peer system info: %w", err)
+		}
+		defer resp.Body.Close()
+
+		var peerSys System
+		if err := json.NewDecoder(resp.Body).Decode(&peerSys); err != nil {
+			return fmt.Errorf("failed to parse peer system info: %w", err)
+		}
+
+		// Generate our deterministic coordinates based on this sponsor
+		dht.localSystem.GenerateClusteredCoordinates(&peerSys)
+		
+		log.Printf("  Assigned sponsor: %s (%s)", peerSys.Name, peerSys.ID.String()[:8])
+		log.Printf("  New coordinates: (%.2f, %.2f, %.2f)", 
+			dht.localSystem.X, dht.localSystem.Y, dht.localSystem.Z)
+		
+		// Save updated coordinates to database
+		if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
+			log.Printf("  Warning: failed to save coordinates: %v", err)
+		}
+	}
+
+	// Now we can ping with valid coordinates
 	sys, err := dht.Ping(address)
 	if err != nil {
 		return fmt.Errorf("failed to ping bootstrap peer: %w", err)
@@ -150,6 +181,44 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 	}
 
 	log.Printf("  Seed returned %d systems", len(systems))
+
+	// If we don't have a sponsor yet (new node), set one before pinging
+	// This is required for coordinate validation
+	if dht.localSystem.SponsorID == nil && dht.localSystem.Stars.Primary.Class != "X" {
+		// Find a suitable sponsor from the discovery list
+		var sponsor *DiscoverySystem
+		for i := range systems {
+			if systems[i].ID != dht.localSystem.ID.String() {
+				sponsor = &systems[i]
+				break
+			}
+		}
+		
+		if sponsor != nil {
+			sponsorID, err := uuid.Parse(sponsor.ID)
+			if err == nil {
+				// Create a temporary System struct for coordinate generation
+				sponsorSys := &System{
+					ID: sponsorID,
+					X:  sponsor.X,
+					Y:  sponsor.Y,
+					Z:  sponsor.Z,
+				}
+				
+				// Generate our deterministic coordinates based on sponsor
+				dht.localSystem.GenerateClusteredCoordinates(sponsorSys)
+				
+				log.Printf("  Assigned sponsor: %s (%s)", sponsor.Name, sponsor.ID[:8])
+				log.Printf("  New coordinates: (%.2f, %.2f, %.2f)", 
+					dht.localSystem.X, dht.localSystem.Y, dht.localSystem.Z)
+				
+				// Save updated coordinates to database
+				if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
+					log.Printf("  Warning: failed to save coordinates: %v", err)
+				}
+			}
+		}
+	}
 
 	// Try to connect to systems with capacity
 	connected := 0
