@@ -259,6 +259,7 @@ func (w *WebInterface) handleCreditsAPI(rw http.ResponseWriter, r *http.Request)
 
 func (w *WebInterface) handleVersionAPI(rw http.ResponseWriter, r *http.Request) {
     response := map[string]interface{}{
+        "version":  BuildVersion,
         "protocol": CurrentProtocolVersion.String(),
         "software": "stellar-lab",
     }

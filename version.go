@@ -6,17 +6,21 @@ import (
 	"strings"
 )
 
-// Protocol version for DHT-based stellar-lab v1.0.0
-const (
-	ProtocolMajor = 1
-	ProtocolMinor = 2
-	ProtocolPatch = 1
-)
+// BuildVersion is set at build time via ldflags
+// Example: go build -ldflags "-X main.BuildVersion=1.2.3"
+var BuildVersion = "dev"
 
-var CurrentProtocolVersion = ProtocolVersion{
-	Major: ProtocolMajor,
-	Minor: ProtocolMinor,
-	Patch: ProtocolPatch,
+// CurrentProtocolVersion is parsed from BuildVersion at init
+var CurrentProtocolVersion ProtocolVersion
+
+func init() {
+	v, err := ParseVersion(BuildVersion)
+	if err != nil {
+		// Fallback for dev builds - obviously not a release
+		CurrentProtocolVersion = ProtocolVersion{Major: 0, Minor: 0, Patch: 0}
+	} else {
+		CurrentProtocolVersion = v
+	}
 }
 
 // ProtocolVersion represents a semantic version
@@ -26,13 +30,16 @@ type ProtocolVersion struct {
 	Patch int `json:"patch"`
 }
 
-// String returns the version as a string (e.g., "2.0.0")
+// String returns the version as a string (e.g., "1.0.0")
 func (v ProtocolVersion) String() string {
 	return fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
 }
 
 // ParseVersion parses a version string into a ProtocolVersion
 func ParseVersion(s string) (ProtocolVersion, error) {
+	// Strip leading 'v' if present
+	s = strings.TrimPrefix(s, "v")
+	
 	parts := strings.Split(s, ".")
 	if len(parts) != 3 {
 		return ProtocolVersion{}, fmt.Errorf("invalid version format: %s", s)
@@ -71,18 +78,4 @@ func (v ProtocolVersion) IsNewerThan(other ProtocolVersion) bool {
 		return v.Minor > other.Minor
 	}
 	return v.Patch > other.Patch
-}
-
-// VersionInfo contains version information for protocol messages
-type VersionInfo struct {
-	Protocol string `json:"protocol"` // Protocol version (e.g., "2.0.0")
-	Software string `json:"software"` // Software identifier
-}
-
-// GetVersionInfo returns the current version info for messages
-func GetVersionInfo() VersionInfo {
-	return VersionInfo{
-		Protocol: CurrentProtocolVersion.String(),
-		Software: "stellar-lab",
-	}
 }

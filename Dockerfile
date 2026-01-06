@@ -6,6 +6,9 @@ RUN apk add --no-cache gcc musl-dev
 
 WORKDIR /app
 
+# Version is passed in at build time
+ARG VERSION=dev
+
 # Copy go mod files first for better caching
 COPY go.mod go.sum ./
 RUN go mod download
@@ -13,8 +16,8 @@ RUN go mod download
 # Copy source code
 COPY *.go ./
 
-# Build with CGO enabled for SQLite
-RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags '-linkmode external -extldflags "-static"' -o stellar-lab .
+# Build with CGO enabled for SQLite, inject version
+RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags "-linkmode external -extldflags '-static' -X main.BuildVersion=${VERSION}" -o stellar-lab .
 
 # Runtime stage - minimal image
 FROM alpine:3.19
