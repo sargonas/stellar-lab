@@ -16,6 +16,7 @@ const (
 // DHTMessage is the unified message format for all DHT operations
 type DHTMessage struct {
 	Type        string       `json:"type"`                    // "ping", "find_node", "announce"
+	Version     string       `json:"version"`                 // Protocol version (e.g., "1.0.0")
 	FromSystem  *System      `json:"from_system"`             // Sender's full system info (always included)
 	TargetID    *uuid.UUID   `json:"target_id,omitempty"`     // For find_node: the ID we're looking for
 	ClosestNodes []*System   `json:"closest_nodes,omitempty"` // For find_node response: K closest nodes
@@ -56,6 +57,7 @@ func NewPingRequest(fromSystem *System, requestID string) (*DHTMessage, error) {
 
 	return &DHTMessage{
 		Type:        MessageTypePing,
+		Version:     CurrentProtocolVersion.String(),
 		FromSystem:  fromSystem,
 		Attestation: attestation,
 		Timestamp:   time.Now(),
@@ -80,6 +82,7 @@ func NewPingResponse(fromSystem *System, requestID string) (*DHTMessage, error) 
 
 	return &DHTMessage{
 		Type:        MessageTypePing,
+		Version:     CurrentProtocolVersion.String(),
 		FromSystem:  fromSystem,
 		Attestation: attestation,
 		Timestamp:   time.Now(),
@@ -104,6 +107,7 @@ func NewFindNodeRequest(fromSystem *System, targetID uuid.UUID, requestID string
 
 	return &DHTMessage{
 		Type:        MessageTypeFindNode,
+		Version:     CurrentProtocolVersion.String(),
 		FromSystem:  fromSystem,
 		TargetID:    &targetID,
 		Attestation: attestation,
@@ -129,6 +133,7 @@ func NewFindNodeResponse(fromSystem *System, closestNodes []*System, requestID s
 
 	return &DHTMessage{
 		Type:         MessageTypeFindNode,
+		Version:      CurrentProtocolVersion.String(),
 		FromSystem:   fromSystem,
 		ClosestNodes: closestNodes,
 		Attestation:  attestation,
@@ -154,6 +159,7 @@ func NewAnnounceRequest(fromSystem *System, requestID string) (*DHTMessage, erro
 
 	return &DHTMessage{
 		Type:        MessageTypeAnnounce,
+		Version:     CurrentProtocolVersion.String(),
 		FromSystem:  fromSystem,
 		Attestation: attestation,
 		Timestamp:   time.Now(),
@@ -178,6 +184,7 @@ func NewAnnounceResponse(fromSystem *System, requestID string) (*DHTMessage, err
 
 	return &DHTMessage{
 		Type:        MessageTypeAnnounce,
+		Version:     CurrentProtocolVersion.String(),
 		FromSystem:  fromSystem,
 		Attestation: attestation,
 		Timestamp:   time.Now(),

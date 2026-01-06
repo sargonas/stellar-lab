@@ -183,7 +183,7 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 
 // handlePing processes a ping request
 func (dht *DHT) handlePing(msg *DHTMessage) (*DHTMessage, error) {
-	log.Printf("PING from %s (%s)", msg.FromSystem.Name, msg.FromSystem.ID)
+	log.Printf("PING from %s (%s) [v%s]", msg.FromSystem.Name, msg.FromSystem.ID, msg.Version)
 
 	// Mark the sender as verified since they successfully contacted us
 	dht.routingTable.MarkVerified(msg.FromSystem.ID)
@@ -222,7 +222,7 @@ func (dht *DHT) handleFindNode(msg *DHTMessage) (*DHTMessage, error) {
 
 // handleAnnounce processes an announce request
 func (dht *DHT) handleAnnounce(msg *DHTMessage) (*DHTMessage, error) {
-	log.Printf("ANNOUNCE from %s (%s)", msg.FromSystem.Name, msg.FromSystem.ID)
+	log.Printf("ANNOUNCE from %s (%s) [v%s]", msg.FromSystem.Name, msg.FromSystem.ID, msg.Version)
 
 	// Cache the announcing system (already done in handleDHTMessage via Update)
 	// Mark as verified since they're actively announcing

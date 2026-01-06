@@ -71,6 +71,7 @@ func (w *WebInterface) Start() error {
     mux.HandleFunc("/api/known-systems", w.handleKnownSystemsAPI)
     mux.HandleFunc("/api/stats", w.handleStatsAPI)
     mux.HandleFunc("/api/credits", w.handleCreditsAPI)
+    mux.HandleFunc("/api/version", w.handleVersionAPI)
 
     log.Printf("Web interface listening on %s", w.addr)
     go func() {
@@ -252,6 +253,15 @@ func (w *WebInterface) handleCreditsAPI(rw http.ResponseWriter, r *http.Request)
         "last_updated":      balance.LastUpdated,
     }
 
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(response)
+}
+
+func (w *WebInterface) handleVersionAPI(rw http.ResponseWriter, r *http.Request) {
+    response := map[string]interface{}{
+        "protocol": CurrentProtocolVersion.String(),
+        "software": "stellar-mesh-dht",
+    }
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(response)
 }
