@@ -72,6 +72,7 @@ func (w *WebInterface) Start() error {
     mux.HandleFunc("/api/stats", w.handleStatsAPI)
     mux.HandleFunc("/api/credits", w.handleCreditsAPI)
     mux.HandleFunc("/api/version", w.handleVersionAPI)
+    mux.HandleFunc("/api/connections", w.handleConnectionsAPI)
 
     log.Printf("Web interface listening on %s", w.addr)
     go func() {
@@ -267,6 +268,17 @@ func (w *WebInterface) handleVersionAPI(rw http.ResponseWriter, r *http.Request)
     json.NewEncoder(rw).Encode(response)
 }
 
+func (w *WebInterface) handleConnectionsAPI(rw http.ResponseWriter, r *http.Request) {
+    // Get connections from peer_connections table (1 hour max age)
+    connections, err := w.storage.GetAllConnections(time.Hour)
+    if err != nil {
+        http.Error(rw, "Failed to get connections", http.StatusInternalServerError)
+        return
+    }
+    rw.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(rw).Encode(connections)
+}
+
 // formatBytes formats a byte count as a human-readable string
 func formatBytes(bytes int64) string {
     const unit = 1024
@@ -389,6 +401,19 @@ const indexTemplate = `<!DOCTYPE html>
         .map-label.self {
             color: #60a5fa;
             font-weight: 500;
+        }
+        .map-connection {
+            stroke: rgba(100, 200, 255, 0.3);
+            stroke-width: 1;
+            fill: none;
+        }
+        .map-svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
         }
         .version-badge {
             display: inline-block;
@@ -527,8 +552,19 @@ const indexTemplate = `<!DOCTYPE html>
 
         // Map state for pan/zoom
         let mapState = { panX: 0, panY: 0, zoom: 1, dragging: false, lastX: 0, lastY: 0 };
+        let cachedConnections = [];
 
-        function renderGalaxyMap() {
+        async function fetchConnections() {
+            try {
+                const resp = await fetch('/api/connections');
+                cachedConnections = await resp.json();
+            } catch (e) {
+                console.error('Failed to fetch connections:', e);
+                cachedConnections = [];
+            }
+        }
+
+        async function renderGalaxyMap() {
             const map = document.getElementById('galaxy-map');
             if (!map) return;
 
@@ -540,8 +576,17 @@ const indexTemplate = `<!DOCTYPE html>
                 return;
             }
 
+            // Fetch connections if we haven't yet
+            if (cachedConnections.length === 0 && knownSystems.length > 0) {
+                await fetchConnections();
+            }
+
             const allSystems = [selfSystem, ...knownSystems];
             if (allSystems.length === 0) return;
+
+            // Build ID to system lookup
+            const systemById = {};
+            allSystems.forEach(s => { systemById[s.id] = s; });
 
             // Check if all systems are at the same location
             const allSameLocation = allSystems.every(s =>
@@ -591,6 +636,10 @@ const indexTemplate = `<!DOCTYPE html>
                 });
             }
 
+            // Build display lookup
+            const displayById = {};
+            displaySystems.forEach(s => { displayById[s.id] = s; });
+
             map.innerHTML = '';
 
             // Create transformable container
@@ -599,6 +648,29 @@ const indexTemplate = `<!DOCTYPE html>
             container.style.transform = 'translate(' + mapState.panX + 'px,' + mapState.panY + 'px) scale(' + mapState.zoom + ')';
             container.style.transformOrigin = 'center center';
 
+            // Draw connection lines using SVG
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('class', 'map-svg');
+            svg.setAttribute('width', width);
+            svg.setAttribute('height', height);
+
+            cachedConnections.forEach(conn => {
+                const from = displayById[conn.from_id];
+                const to = displayById[conn.to_id];
+                if (from && to && from.displayX && to.displayX) {
+                    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', from.displayX);
+                    line.setAttribute('y1', from.displayY);
+                    line.setAttribute('x2', to.displayX);
+                    line.setAttribute('y2', to.displayY);
+                    line.setAttribute('class', 'map-connection');
+                    svg.appendChild(line);
+                }
+            });
+
+            container.appendChild(svg);
+
+            // Draw nodes and labels
             displaySystems.forEach((s, idx) => {
                 const x = s.displayX;
                 const y = s.displayY;
