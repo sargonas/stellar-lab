@@ -9,8 +9,8 @@ import (
 // Protocol version for DHT-based stellar-lab v1.0.0
 const (
 	ProtocolMajor = 1
-	ProtocolMinor = 0
-	ProtocolPatch = 0
+	ProtocolMinor = 2
+	ProtocolPatch = 1
 )
 
 var CurrentProtocolVersion = ProtocolVersion{
