@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Protocol version for DHT-based stellar-mesh v1.0.0
+// Protocol version for DHT-based stellar-lab v1.0.0
 const (
 	ProtocolMajor = 1
 	ProtocolMinor = 0
@@ -83,6 +83,6 @@ type VersionInfo struct {
 func GetVersionInfo() VersionInfo {
 	return VersionInfo{
 		Protocol: CurrentProtocolVersion.String(),
-		Software: "stellar-mesh-dht",
+		Software: "stellar-lab",
 	}
 }

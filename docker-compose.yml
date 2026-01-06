@@ -1,7 +1,7 @@
 services:
-  stellar-mesh:
+  stellar-lab:
     image: ghcr.io/sargonas/stellar-lab:latest
-    container_name: stellar-mesh
+    container_name: stellar-lab
     restart: unless-stopped
     ports:
       - "8080:8080"   # Web UI
@@ -12,7 +12,7 @@ services:
       - STELLAR_NAME=MyStarSystem
       - STELLAR_PUBLIC_ADDRESS=your-domain.com:7867
       # Optional:
-      # - STELLAR_DB=/data/stellar-mesh.db
+      # - STELLAR_DB=/data/stellar-lab.db
       # - STELLAR_ADDRESS=0.0.0.0:8080
       # - STELLAR_BOOTSTRAP=seed-node.com:7867
 

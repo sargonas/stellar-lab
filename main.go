@@ -18,7 +18,7 @@ func main() {
 	// Parse command line flags (CLI args override environment variables)
 	name := flag.String("name", getEnv("STELLAR_NAME", ""), "Name for this star system")
 	seed := flag.String("seed", getEnv("STELLAR_SEED", ""), "Seed for deterministic UUID generation (optional)")
-	dbPath := flag.String("db", getEnv("STELLAR_DB", "/data/stellar-mesh.db"), "Path to SQLite database")
+	dbPath := flag.String("db", getEnv("STELLAR_DB", "/data/stellar-lab.db"), "Path to SQLite database")
 	address := flag.String("address", getEnv("STELLAR_ADDRESS", "0.0.0.0:8080"), "Address to bind web UI server (host:port)")
 	publicAddr := flag.String("public-address", getEnv("STELLAR_PUBLIC_ADDRESS", ""), "Public address for peer connections (host:port)")
 	bootstrapPeer := flag.String("bootstrap", getEnv("STELLAR_BOOTSTRAP", ""), "Bootstrap peer address (host:port)")

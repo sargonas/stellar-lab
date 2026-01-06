@@ -260,7 +260,7 @@ func (w *WebInterface) handleCreditsAPI(rw http.ResponseWriter, r *http.Request)
 func (w *WebInterface) handleVersionAPI(rw http.ResponseWriter, r *http.Request) {
     response := map[string]interface{}{
         "protocol": CurrentProtocolVersion.String(),
-        "software": "stellar-mesh-dht",
+        "software": "stellar-lab",
     }
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(response)
@@ -286,7 +286,7 @@ const indexTemplate = `<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.System.Name}} - Stellar Mesh DHT</title>
+    <title>{{.System.Name}} - Stellar Lab</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -402,7 +402,7 @@ const indexTemplate = `<!DOCTYPE html>
     <div class="container">
         <h1>{{.System.Name}}</h1>
         <p class="subtitle">
-            Stellar Mesh DHT Node
+            Stellar Lab Node
             <span class="version-badge">v{{.ProtocolVersion}}</span>
         </p>
 
