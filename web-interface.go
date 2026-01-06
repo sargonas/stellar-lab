@@ -272,9 +272,39 @@ func (w *WebInterface) handleConnectionsAPI(rw http.ResponseWriter, r *http.Requ
     // Get connections from peer_connections table (1 hour max age)
     connections, err := w.storage.GetAllConnections(time.Hour)
     if err != nil {
-        http.Error(rw, "Failed to get connections", http.StatusInternalServerError)
-        return
+        connections = []TopologyEdge{} // Continue with empty if error
     }
+
+    // Also add our direct connections (routing table peers)
+    // These are definitely connected to us
+    selfID := w.dht.GetLocalSystem().ID.String()
+    selfName := w.dht.GetLocalSystem().Name
+    peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
+    
+    // Build a set of existing connections to avoid duplicates
+    existingEdges := make(map[string]bool)
+    for _, c := range connections {
+        key1 := c.FromID + ":" + c.ToID
+        key2 := c.ToID + ":" + c.FromID
+        existingEdges[key1] = true
+        existingEdges[key2] = true
+    }
+    
+    // Add our direct peer connections
+    for _, peer := range peers {
+        peerID := peer.ID.String()
+        key := selfID + ":" + peerID
+        if !existingEdges[key] {
+            connections = append(connections, TopologyEdge{
+                FromID:   selfID,
+                FromName: selfName,
+                ToID:     peerID,
+                ToName:   peer.Name,
+            })
+            existingEdges[key] = true
+        }
+    }
+
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(connections)
 }
