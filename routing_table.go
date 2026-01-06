@@ -24,7 +24,8 @@ const (
 	SpatialReplacementThreshold = 0.8
 
 	// MaxFailCount before a node is considered dead
-	MaxFailCount = 3
+	// With 5-min liveness checks, 12 failures = 60 min (double longevity reset threshold)
+	MaxFailCount = 12
 )
 
 // BucketEntry represents a node in a k-bucket
@@ -306,6 +307,25 @@ func (rt *RoutingTable) MarkVerified(nodeID uuid.UUID) {
 		cached.Verified = true
 	}
 	rt.cacheMu.Unlock()
+}
+
+// EvictDeadNodes removes nodes with too many failures from routing table
+func (rt *RoutingTable) EvictDeadNodes() int {
+	evicted := 0
+	for _, bucket := range rt.buckets {
+		bucket.mu.Lock()
+		newEntries := make([]*BucketEntry, 0, len(bucket.entries))
+		for _, entry := range bucket.entries {
+			if entry.FailCount < MaxFailCount {
+				newEntries = append(newEntries, entry)
+			} else {
+				evicted++
+			}
+		}
+		bucket.entries = newEntries
+		bucket.mu.Unlock()
+	}
+	return evicted
 }
 
 // GetClosest returns the K closest nodes to a target ID
