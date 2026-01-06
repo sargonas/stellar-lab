@@ -77,6 +77,19 @@ func (dht *DHT) FindNode(targetID uuid.UUID) *LookupResult {
 			// Mark as queried
 			queried[resp.nodeID] = true
 
+			// Save learned peer connections (responder knows these nodes)
+			if len(resp.nodes) > 0 {
+				peerIDs := make([]uuid.UUID, 0, len(resp.nodes))
+				for _, sys := range resp.nodes {
+					if sys.ID != dht.localSystem.ID && sys.ID != resp.nodeID {
+						peerIDs = append(peerIDs, sys.ID)
+					}
+				}
+				if len(peerIDs) > 0 {
+					dht.storage.SavePeerConnections(resp.nodeID, peerIDs)
+				}
+			}
+
 			// Process returned nodes
 			for _, sys := range resp.nodes {
 				if sys.ID == dht.localSystem.ID {
