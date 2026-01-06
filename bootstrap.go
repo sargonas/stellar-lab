@@ -54,14 +54,13 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		log.Printf("Could not reach any cached peers, falling back to bootstrap...")
 	}
 
-	// If we have a direct bootstrap peer, try that first
+	// If we have a direct bootstrap peer, try that ONLY (no fallback)
 	if config.BootstrapPeer != "" {
 		if err := dht.bootstrapFromPeer(config.BootstrapPeer); err != nil {
-			log.Printf("Direct bootstrap peer failed: %v", err)
-		} else {
-			log.Printf("Successfully bootstrapped from direct peer")
-			return dht.completeBootstrap()
+			return fmt.Errorf("direct bootstrap peer failed: %w", err)
 		}
+		log.Printf("Successfully bootstrapped from direct peer")
+		return dht.completeBootstrap()
 	}
 
 	// Try seed nodes
