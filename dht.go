@@ -124,6 +124,9 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit request body size to 1MB for security
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 	var msg DHTMessage
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 		dht.sendError(w, ErrCodeInvalidMessage, "invalid JSON: "+err.Error())
@@ -137,6 +140,23 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 		} else {
 			dht.sendError(w, ErrCodeInvalidMessage, err.Error())
 		}
+		return
+	}
+
+	// Validate coordinates match expected position based on UUID + Sponsor
+	lookupSponsor := func(sponsorID uuid.UUID) *System {
+		// Check routing table cache first
+		if cached := dht.routingTable.GetCachedSystem(sponsorID); cached != nil {
+			return cached
+		}
+		// Try storage
+		if stored, err := dht.storage.GetPeerSystem(sponsorID); err == nil {
+			return stored
+		}
+		return nil
+	}
+	if !ValidateCoordinates(msg.FromSystem, lookupSponsor) {
+		dht.sendError(w, ErrCodeInvalidMessage, "coordinates invalid for UUID and sponsor")
 		return
 	}
 

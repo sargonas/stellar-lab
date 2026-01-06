@@ -93,3 +93,13 @@ func (a *Attestation) Verify() bool {
 	msg := a.GetSignableMessage()
 	return ed25519.Verify(pubKeyBytes, msg, sigBytes)
 }
+
+// Checks if timestamp is within acceptable ranges
+func (a *Attestation) IsTimestampValid(maxDrift time.Duration) bool {
+    now := time.Now().Unix()
+    diff := now - a.Timestamp
+    if diff < 0 {
+        diff = -diff
+    }
+    return diff <= int64(maxDrift.Seconds())
+}
