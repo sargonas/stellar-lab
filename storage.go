@@ -202,6 +202,14 @@ func (s *Storage) createTables() error {
 		verified_at INTEGER NOT NULL
 	);
 
+	-- Identity bindings: locks UUID to public key on first contact
+	-- Prevents UUID spoofing attacks
+	CREATE TABLE IF NOT EXISTS identity_bindings (
+		system_id TEXT PRIMARY KEY,
+		public_key TEXT NOT NULL,
+		first_seen INTEGER NOT NULL
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_credit_transfers_from ON credit_transfers(from_system_id);
 	CREATE INDEX IF NOT EXISTS idx_credit_transfers_to ON credit_transfers(to_system_id);
 	CREATE INDEX IF NOT EXISTS idx_credit_transfers_timestamp ON credit_transfers(timestamp);
@@ -242,6 +250,13 @@ func (s *Storage) runMigrations() error {
 	)`)
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_verified_transfers_from ON verified_transfers(from_system_id)")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_verified_transfers_to ON verified_transfers(to_system_id)")
+	
+	// Create identity_bindings table if it doesn't exist
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS identity_bindings (
+		system_id TEXT PRIMARY KEY,
+		public_key TEXT NOT NULL,
+		first_seen INTEGER NOT NULL
+	)`)
 	
 	return nil
 }
@@ -1356,4 +1371,42 @@ func (s *Storage) GetAllVerifiedTransfers() ([]*CreditTransfer, error) {
 	}
 
 	return transfers, nil
+}
+
+// =============================================================================
+// IDENTITY BINDING (UUID spoofing prevention)
+// =============================================================================
+
+// ValidateIdentityBinding checks if a system's public key matches what we've seen before
+// Returns: (isValid bool, isNewIdentity bool, error)
+// - If we've never seen this UUID: saves binding, returns (true, true, nil)
+// - If we've seen it with same key: returns (true, false, nil)
+// - If we've seen it with different key: returns (false, false, nil) - spoofing attempt
+func (s *Storage) ValidateIdentityBinding(systemID uuid.UUID, publicKey string) (bool, bool, error) {
+	var existingKey string
+	err := s.db.QueryRow(
+		"SELECT public_key FROM identity_bindings WHERE system_id = ?",
+		systemID.String(),
+	).Scan(&existingKey)
+
+	if err == sql.ErrNoRows {
+		// First time seeing this UUID - bind it
+		_, err := s.db.Exec(
+			"INSERT INTO identity_bindings (system_id, public_key, first_seen) VALUES (?, ?, ?)",
+			systemID.String(), publicKey, time.Now().Unix(),
+		)
+		if err != nil {
+			return false, false, fmt.Errorf("failed to save identity binding: %w", err)
+		}
+		return true, true, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("failed to check identity binding: %w", err)
+	}
+
+	// We've seen this UUID before - verify key matches
+	if existingKey != publicKey {
+		return false, false, nil // Spoofing attempt!
+	}
+	return true, false, nil
 }

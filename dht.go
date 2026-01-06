@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -133,6 +134,12 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject messages claiming our own UUID (impersonation attempt)
+	if msg.FromSystem != nil && msg.FromSystem.ID == dht.localSystem.ID {
+		dht.sendError(w, ErrCodeInvalidMessage, "cannot impersonate local system")
+		return
+	}
+
 	// Validate message
 	if err := msg.Validate(); err != nil {
 		if dhtErr, ok := err.(*DHTError); ok {
@@ -141,6 +148,25 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 			dht.sendError(w, ErrCodeInvalidMessage, err.Error())
 		}
 		return
+	}
+
+	// Validate identity binding (UUID must always map to same public key)
+	if msg.FromSystem != nil && msg.FromSystem.Keys != nil {
+		pubKeyStr := base64.StdEncoding.EncodeToString(msg.FromSystem.Keys.PublicKey)
+		valid, isNew, err := dht.storage.ValidateIdentityBinding(msg.FromSystem.ID, pubKeyStr)
+		if err != nil {
+			log.Printf("Identity binding check failed: %v", err)
+			dht.sendError(w, ErrCodeInternalError, "identity validation error")
+			return
+		}
+		if !valid {
+			log.Printf("UUID spoofing attempt detected: %s", msg.FromSystem.ID)
+			dht.sendError(w, ErrCodeInvalidMessage, "identity mismatch: UUID bound to different key")
+			return
+		}
+		if isNew {
+			log.Printf("New identity bound: %s", msg.FromSystem.ID)
+		}
 	}
 
 	// Validate coordinates match expected position based on UUID + Sponsor
