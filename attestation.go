@@ -16,7 +16,7 @@ type KeyPair struct {
 	PrivateKey ed25519.PrivateKey `json:"-"` // Never serialized
 }
 
-// GenerateKeyPair creates a new Ed25519 keypair
+// create a new Ed25519 keypair
 func GenerateKeyPair() (*KeyPair, error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -33,7 +33,7 @@ type Attestation struct {
 	FromSystemID uuid.UUID `json:"from_system_id"` // Who sent this
 	ToSystemID   uuid.UUID `json:"to_system_id"`   // Who received it
 	Timestamp    int64     `json:"timestamp"`      // Unix timestamp
-	MessageType  string    `json:"message_type"`   // "ping", "find_node", "announce"
+	MessageType  string    `json:"message_type"`
 	Signature    string    `json:"signature"`      // Ed25519 signature (base64)
 	PublicKey    string    `json:"public_key"`     // Sender's public key (base64)
 }

@@ -13,12 +13,12 @@ import (
 // BootstrapConfig holds configuration for the bootstrap process
 type BootstrapConfig struct {
 	SeedNodes       []string      // Seed node addresses to try
-	BootstrapPeer   string        // Direct peer to bootstrap from (optional)
+	BootstrapPeer   string        // Direct peer to bootstrap from
 	Timeout         time.Duration // Timeout for bootstrap operations
 	MinInitialPeers int           // Minimum peers before considering bootstrap complete
 }
 
-// DefaultBootstrapConfig returns sensible defaults
+// DefaultBootstrapConfig sets our defaults
 func DefaultBootstrapConfig() BootstrapConfig {
 	return BootstrapConfig{
 		Timeout:         30 * time.Second,
@@ -56,7 +56,7 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		log.Printf("Could not reach any cached peers, falling back to bootstrap...")
 	}
 
-	// If we have a direct bootstrap peer, try that ONLY (no fallback)
+	// If we have a direct bootstrap peer by cli parameter, try that ONLY (no fallback to seed list)
 	if config.BootstrapPeer != "" {
 		if err := dht.bootstrapFromPeer(config.BootstrapPeer); err != nil {
 			return fmt.Errorf("direct bootstrap peer failed: %w", err)
@@ -65,7 +65,7 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		return dht.completeBootstrap()
 	}
 
-	// Try seed nodes
+	// Try the seed nodes
 	if len(config.SeedNodes) > 0 {
 		for _, seedAddr := range config.SeedNodes {
 			log.Printf("Trying seed node: %s", seedAddr)
@@ -91,7 +91,7 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		return dht.completeBootstrap()
 	}
 
-	// No bootstrap sources available
+	// When no bootstrap sources available
 	rtSize := dht.routingTable.GetRoutingTableSize()
 	if rtSize > 0 {
 		log.Printf("Warning: Could not contact any seed nodes, but have %d cached peers", rtSize)
@@ -109,7 +109,7 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 	// If we don't have a sponsor yet, we need to get peer info BEFORE pinging
 	// because the ping will fail coordinate validation without valid coordinates
 	if dht.localSystem.SponsorID == nil && dht.localSystem.Stars.Primary.Class != "X" {
-		// Get peer's system info via HTTP (not DHT ping)
+		// Get peer's system info via HTTP api call (not DHT ping)
 		systemURL := fmt.Sprintf("http://%s/system", address)
 		resp, err := http.Get(systemURL)
 		if err != nil {

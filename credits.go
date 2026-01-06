@@ -63,7 +63,8 @@ type CreditRank struct {
 	Color     string `json:"color"` // For UI display
 }
 
-// Credit ranks with thresholds designed for slow progression
+// Credit ranks with thresholds designed for slow progression. I'm not married to these and
+//  open to adjustments or an entirely new system
 var CreditRanks = []CreditRank{
 	{Name: "Diamond", Threshold: 8640, Color: "#b9f2ff"},   // ~1 year
 	{Name: "Platinum", Threshold: 4320, Color: "#e5e4e2"}, // ~6 months
