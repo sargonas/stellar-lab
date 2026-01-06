@@ -142,7 +142,8 @@ func main() {
 		}
 
 		// If this is a new node at origin (0,0,0), update coordinates near a peer
-		if system.X == 0 && system.Y == 0 && system.Z == 0 {
+		// Exception: Class X (genesis black hole) stays at origin
+		if system.X == 0 && system.Y == 0 && system.Z == 0 && system.Stars.Primary.Class != "X" {
 			peers := dht.GetRoutingTable().GetAllRoutingTableNodes()
 			if len(peers) > 0 {
 				sponsor := peers[0]
