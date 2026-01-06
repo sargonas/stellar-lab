@@ -4,7 +4,7 @@ A silly program for home labbers and others to run when you have a few spare meg
 
 ## Overview
 
-Stellar Mesh creates a virtual galaxy where each participant runs a node representing a star system. Systems have procedurally generated identities—star types, binary/trinary compositions, and 3D coordinates—all derived deterministically from a cryptographic seed. Nodes build reputation through cryptographically signed attestations of their interactions.
+Stellar Lab creates a virtual galaxy where each participant runs a node representing a star system. Systems have procedurally generated identities—star types, binary/trinary compositions, and 3D coordinates—all derived deterministically from a cryptographic seed. Nodes build reputation through cryptographically signed attestations of their interactions.
 
 **Key Properties:**
 - **Guaranteed discovery**: Any node can find any other node in O(log n) hops
@@ -80,13 +80,13 @@ The recomended method is to spin up a docker container. A sample compose file is
 git clone https://github.com/sargonas/stellar-lab.git
 cd stellar-lab
 go mod tidy
-go build -o stellar-mesh
+go build -o stellar-lab
 ```
 
 ### Run Your First Node
 
 ```bash
-./stellar-mesh -name "Sol" -public-address "your-domain.com:7867"
+./stellar-lab -name "Sol" -public-address "your-domain.com:7867"
 ```
 
 Visit http://localhost:8080 for the web interface.
@@ -98,7 +98,7 @@ Nodes discover the network automatically via seeder nodes:
 Or you can manually bootstrap from a specific peer:
 
 ```bash
-./stellar-mesh -name "Alpha Centauri" -public-address "my-server.com:7867" -bootstrap "192.168.1.100:7867"
+./stellar-lab -name "Alpha Centauri" -public-address "my-server.com:7867" -bootstrap "192.168.1.100:7867"
 ```
 
 ### Multi-Node Local Testing
@@ -106,14 +106,14 @@ Or you can manually bootstrap from a specific peer:
 When testing locally, you can run multiple nodes from one install base by specifying unique database files, ports, and custom seeds.
 ```bash
 # Terminal 1 - Seed node
-./stellar-mesh -name "Sol" -seed "sol" -public-address "localhost:7867" -db "sol.db"
+./stellar-lab -name "Sol" -seed "sol" -public-address "localhost:7867" -db "sol.db"
 
 # Terminal 2
-./stellar-mesh -name "Alpha" -seed "alpha" \
+./stellar-lab -name "Alpha" -seed "alpha" \
   -public-address "localhost:7868" -address "0.0.0.0:8081" -db "alpha.db"
 
 # Terminal 3
-./stellar-mesh -name "Beta" -seed "beta" \
+./stellar-lab -name "Beta" -seed "beta" \
   -public-address "localhost:7869" -address "0.0.0.0:8082" -db "beta.db"
 ```
 
@@ -129,14 +129,14 @@ All settings can be configured via command-line flags or environment variables. 
 | `-public-address` | `STELLAR_PUBLIC_ADDRESS` | (required) | Public address for peer connections (host:port) |
 | `-seed` | `STELLAR_SEED` | (random) | Seed for deterministic UUID generation in development |
 | `-address` | `STELLAR_ADDRESS` | `0.0.0.0:8080` | Web UI bind address (host:port) |
-| `-db` | `STELLAR_DB` | `/data/stellar-mesh.db` | SQLite database file path |
+| `-db` | `STELLAR_DB` | `/data/stellar-lab.db` | SQLite database file path |
 | `-bootstrap` | `STELLAR_BOOTSTRAP` | | Specific peer to bootstrap from |
 
 ## Architecture
 
 ### DHT Design
 
-Stellar Mesh uses a Kademlia-inspired Distributed Hash Table:
+Stellar Lab uses a Kademlia-inspired Distributed Hash Table:
 
 - **128-bit Node IDs**: Derived from system UUIDs via SHA-256
 - **XOR Distance Metric**: Determines "closeness" in the network
@@ -325,7 +325,7 @@ curl http://localhost:7867/api/discovery
 curl https://raw.githubusercontent.com/sargonas/stellar-lab/main/SEED-NODES.txt
 
 # Try explicit bootstrap
-./stellar-mesh -name "Test" -bootstrap "known-peer:7867"
+./stellar-lab -name "Test" -bootstrap "known-peer:7867"
 ```
 
 ### Port conflicts
@@ -335,7 +335,7 @@ lsof -i :8080
 lsof -i :7867
 
 # Use different ports
-./stellar-mesh -name "Test" -address "0.0.0.0:8090" -peer-port "7877"
+./stellar-lab -name "Test" -address "0.0.0.0:8090" -peer-port "7877"
 ```
 
 ### All systems at (0,0,0)
@@ -346,8 +346,8 @@ Coordinates are assigned after successful bootstrap. If your node started isolat
 
 ```bash
 # Reset and start fresh
-rm stellar-mesh.db
-./stellar-mesh -name "Sol"
+rm stellar-lab.db
+./stellar-lab -name "Sol"
 ```
 
 ## Contributing

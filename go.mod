@@ -1,4 +1,4 @@
-module stellar-mesh
+module stellar-lab
 
 go 1.18
 
