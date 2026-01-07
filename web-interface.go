@@ -241,6 +241,19 @@ func (w *WebInterface) handleKnownSystemsAPI(rw http.ResponseWriter, r *http.Req
 
 func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
     stats := w.dht.GetNetworkStats()
+    
+    // Merge in database stats for AJAX refresh
+    dbStats, err := w.storage.GetDatabaseStats()
+    if err == nil && dbStats != nil {
+        if count, ok := dbStats["attestation_count"].(int); ok {
+            stats["attestation_count"] = count
+        }
+        if sizeBytes, ok := dbStats["database_size_bytes"].(int64); ok {
+            stats["database_size_bytes"] = sizeBytes
+            stats["database_size"] = formatBytes(sizeBytes)
+        }
+    }
+    
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(stats)
 }
@@ -566,7 +579,7 @@ const indexTemplate = `<!DOCTYPE html>
                 <h2>System Information</h2>
                 <div class="stat-row">
                     <span class="stat-label">Status</span>
-                    <span class="stat-value {{.NodeHealthClass}}">{{.NodeHealth}}</span>
+                    <span id="stat-health" class="stat-value {{.NodeHealthClass}}">{{.NodeHealth}}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">System ID</span>
@@ -596,15 +609,15 @@ const indexTemplate = `<!DOCTYPE html>
                 <h2>Stellar Transport</h2>
                 <div class="stat-row">
                     <span class="stat-label">Routing Table</span>
-                    <span class="stat-value">{{.RoutingTableSize}} nodes</span>
+                    <span id="stat-routing" class="stat-value">{{.RoutingTableSize}} nodes</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">System Cache</span>
-                    <span class="stat-value">{{.CacheSize}} systems</span>
+                    <span id="stat-cache" class="stat-value">{{.CacheSize}} systems</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Known Galaxy</span>
-                    <span class="stat-value">{{.TotalSystems}} systems</span>
+                    <span id="stat-galaxy" class="stat-value">{{.TotalSystems}} systems</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Max Peers</span>
@@ -612,15 +625,15 @@ const indexTemplate = `<!DOCTYPE html>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Attestations</span>
-                    <span class="stat-value">{{.AttestationCount}}</span>
+                    <span id="stat-attestations" class="stat-value">{{.AttestationCount}}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Database</span>
-                    <span class="stat-value">{{.DatabaseSize}}</span>
+                    <span id="stat-dbsize" class="stat-value">{{.DatabaseSize}}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Uptime Streak</span>
-                    <span class="stat-value">{{printf "%.1f" .LongevityWeeks}} weeks</span>
+                    <span id="stat-uptime" class="stat-value">{{printf "%.1f" .LongevityWeeks}} weeks</span>
                 </div>
             </div>
 
@@ -628,33 +641,31 @@ const indexTemplate = `<!DOCTYPE html>
                 <h2>Stellar Credits</h2>
                 <div class="stat-row">
                     <span class="stat-label">Balance</span>
-                    <span class="stat-value">{{.CreditBalance}} ✦</span>
+                    <span id="stat-balance" class="stat-value">{{.CreditBalance}} ✦</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Rank</span>
-                    <span class="stat-value" style="color: {{.CreditRankColor}};">{{.CreditRank}}</span>
+                    <span id="stat-rank" class="stat-value" style="color: {{.CreditRankColor}};">{{.CreditRank}}</span>
                 </div>
-                {{if .NextRank}}
-                <div class="stat-row">
+                <div id="stat-nextrank-row" class="stat-row" {{if not .NextRank}}style="display:none;"{{end}}>
                     <span class="stat-label">Next Rank</span>
-                    <span class="stat-value">{{.NextRank}} ({{.CreditsToNextRank}} ✦ needed)</span>
+                    <span id="stat-nextrank" class="stat-value">{{.NextRank}} ({{.CreditsToNextRank}} ✦ needed)</span>
                 </div>
-                {{end}}
                 <div class="longevity-bar">
                     <div class="longevity-header">
                         <span class="longevity-label">Longevity Bonus</span>
-                        <span class="longevity-value">+{{printf "%.1f" .LongevityBonusPct}}%</span>
+                        <span id="stat-longbonus" class="longevity-value">+{{printf "%.1f" .LongevityBonusPct}}%</span>
                     </div>
                     <div class="longevity-track">
-                        <div class="longevity-fill" style="width: {{printf "%.1f" .LongevityProgressPct}}%;"></div>
+                        <div id="stat-longbar" class="longevity-fill" style="width: {{printf "%.1f" .LongevityProgressPct}}%;"></div>
                     </div>
-                    <div class="longevity-note">{{printf "%.1f" .LongevityWeeks}} / 52 weeks to max (+52%)</div>
+                    <div id="stat-longweeks" class="longevity-note">{{printf "%.1f" .LongevityWeeks}} / 52 weeks to max (+52%)</div>
                 </div>
             </div>
 
             <div class="card">
-                <h2>Routing Table ({{.RoutingTableSize}} nodes)</h2>
-                <div class="peer-list">
+                <h2 id="routing-title">Routing Table ({{.RoutingTableSize}} nodes)</h2>
+                <div id="peer-list" class="peer-list">
                     {{range .Peers}}
                     <div class="peer-item">
                         <div class="peer-name">{{.Name}}</div>
@@ -668,7 +679,7 @@ const indexTemplate = `<!DOCTYPE html>
             </div>
 
             <div class="card grid-full">
-                <h2>Galaxy Map ({{.TotalSystems}} systems)</h2>
+                <h2 id="galaxy-title">Galaxy Map ({{.TotalSystems}} systems)</h2>
                 <div id="galaxy-map"></div>
             </div>
         </div>
@@ -1023,7 +1034,6 @@ const indexTemplate = `<!DOCTYPE html>
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#60a5fa;">●</span> You</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#4ade80;">●</span> Live peers</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#996666;">●</span> Cached</div>' +
-                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid #a78bfa;background:#111;"></span> Black hole</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Reciprocal</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;"><span style="color:#ffaa44;">┄</span> One-way</div>';
             container.appendChild(legend);
@@ -1257,7 +1267,7 @@ const indexTemplate = `<!DOCTYPE html>
                 
                 // Animate ring pulse for self
                 if (selfRing) {
-                    ringPulseTime += 0.02;
+                    ringPulseTime += 0.008; // ~2 second cycle at 60fps
                     const cycle = ringPulseTime % 1; // 0 to 1 cycle
                     const scale = 1 + cycle * 2.5; // 1 to 3.5
                     const opacity = 0.6 * (1 - cycle); // 0.6 to 0
@@ -1299,7 +1309,97 @@ const indexTemplate = `<!DOCTYPE html>
         }
 
         document.addEventListener('DOMContentLoaded', initGalaxyMap);
-        setTimeout(function() { location.reload(); }, 30000);
+        
+        // AJAX refresh stats without reloading page
+        async function refreshStats() {
+            try {
+                // Fetch credits
+                const creditsResp = await fetch('/api/credits');
+                const credits = await creditsResp.json();
+                
+                document.getElementById('stat-balance').textContent = credits.balance + ' ✦';
+                document.getElementById('stat-rank').textContent = credits.rank;
+                document.getElementById('stat-rank').style.color = credits.rank_color;
+                
+                const nextRankRow = document.getElementById('stat-nextrank-row');
+                if (credits.credits_to_next > 0) {
+                    nextRankRow.style.display = '';
+                    document.getElementById('stat-nextrank').textContent = credits.next_rank + ' (' + credits.credits_to_next + ' ✦ needed)';
+                } else {
+                    nextRankRow.style.display = 'none';
+                }
+                
+                const longevityWeeks = credits.longevity_weeks || 0;
+                const longevityBonus = (credits.longevity_bonus || 0) * 100;
+                const longevityProgress = Math.min((longevityWeeks / 52) * 100, 100);
+                
+                document.getElementById('stat-longbonus').textContent = '+' + longevityBonus.toFixed(1) + '%';
+                document.getElementById('stat-longbar').style.width = longevityProgress.toFixed(1) + '%';
+                document.getElementById('stat-longweeks').textContent = longevityWeeks.toFixed(1) + ' / 52 weeks to max (+52%)';
+                document.getElementById('stat-uptime').textContent = longevityWeeks.toFixed(1) + ' weeks';
+                
+                // Fetch stats
+                const statsResp = await fetch('/api/stats');
+                const stats = await statsResp.json();
+                
+                if (stats.attestation_count !== undefined) {
+                    document.getElementById('stat-attestations').textContent = stats.attestation_count;
+                }
+                if (stats.database_size) {
+                    document.getElementById('stat-dbsize').textContent = stats.database_size;
+                }
+                
+                // Fetch peers for routing table
+                const peersResp = await fetch('/api/peers');
+                const peers = await peersResp.json() || [];
+                
+                const routingSize = peers.length;
+                document.getElementById('stat-routing').textContent = routingSize + ' nodes';
+                document.getElementById('routing-title').textContent = 'Routing Table (' + routingSize + ' nodes)';
+                
+                // Update health based on routing table size
+                const healthEl = document.getElementById('stat-health');
+                if (routingSize >= 2) {
+                    healthEl.textContent = 'Healthy';
+                    healthEl.className = 'stat-value health-healthy';
+                } else if (routingSize === 1) {
+                    healthEl.textContent = 'Low Connectivity';
+                    healthEl.className = 'stat-value health-warning';
+                } else {
+                    healthEl.textContent = 'Isolated';
+                    healthEl.className = 'stat-value health-critical';
+                }
+                
+                // Update peer list
+                const peerListEl = document.getElementById('peer-list');
+                if (peers.length === 0) {
+                    peerListEl.innerHTML = '<p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>';
+                } else {
+                    peerListEl.innerHTML = peers.map(p => 
+                        '<div class="peer-item">' +
+                        '<div class="peer-name">' + p.name + '</div>' +
+                        '<div class="peer-id">' + p.id + '</div>' +
+                        '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
+                        '</div>'
+                    ).join('');
+                }
+                
+                // Fetch known systems for counts
+                const systemsResp = await fetch('/api/known-systems');
+                const systems = await systemsResp.json() || [];
+                
+                document.getElementById('stat-cache').textContent = systems.length + ' systems';
+                const totalSystems = systems.length + 1;
+                document.getElementById('stat-galaxy').textContent = totalSystems + ' systems';
+                document.getElementById('galaxy-title').textContent = 'Galaxy Map (' + totalSystems + ' systems)';
+                
+            } catch (err) {
+                console.error('Failed to refresh stats:', err);
+            }
+        }
+        
+        // Refresh stats every 30 seconds
+        setInterval(refreshStats, 30000);
 
         async function exportTopology() {
             const data = {
