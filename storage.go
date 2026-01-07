@@ -162,7 +162,6 @@ func (s *Storage) createTables() error {
 	CREATE INDEX IF NOT EXISTS idx_system_star_count ON system(star_count);
 	CREATE INDEX IF NOT EXISTS idx_attestations_from ON attestations(from_system_id);
 	CREATE INDEX IF NOT EXISTS idx_attestations_to ON attestations(to_system_id);
-	CREATE INDEX IF NOT EXISTS idx_attestations_received_by ON attestations(received_by);
 	CREATE INDEX IF NOT EXISTS idx_attestations_timestamp ON attestations(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attestations_verified ON attestations(verified);
 
