@@ -431,18 +431,16 @@ func (dht *DHT) calculateReciprocityRatio(attestations []*Attestation) float64 {
 		return 0.0
 	}
 
-	// Build set of peers we've heard FROM (they attested to us)
+	// Build set of peers we've heard FROM
+	// These attestations were already filtered by GetAttestationsSince to ones
+	// we received (via received_by column), so just track who sent them
 	heardFrom := make(map[string]bool)
-	myID := dht.localSystem.ID.String()
 
 	for _, att := range attestations {
-		// If attestation is TO us (from a peer)
-		if att.ToSystemID.String() == myID {
-			heardFrom[att.FromSystemID.String()] = true
-		}
+		heardFrom[att.FromSystemID.String()] = true
 	}
 
-	// Count how many of our routing table peers have attested back
+	// Count how many of our routing table peers have attested to us
 	reciprocal := 0
 	for _, peer := range peers {
 		if heardFrom[peer.ID.String()] {

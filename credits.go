@@ -464,6 +464,8 @@ type CreditProof struct {
 	AsOfTime     int64          `json:"as_of_time"`      // Timestamp this proof was generated
 	
 	// Attestations proving uptime - these are signed by OTHER nodes
+	// BROKEN: The comment below describes intended behavior, but ToSystemID is always
+	// uuid.Nil in the current implementation. This proof system won't work until fixed.
 	// Only attestations where ToSystemID == SystemID count (others attesting TO us)
 	Attestations []*Attestation `json:"attestations"`
 	
@@ -526,6 +528,11 @@ func GenerateCreditProof(
 // - 1 credit per hour of attested uptime
 // - Only counts attestations FROM others TO the system (not self-attestations)
 // - No bonuses (they depend on network state at calculation time)
+//
+// BROKEN: This function relies on ToSystemID which is always uuid.Nil in the current
+// implementation. The received_by column tracks recipients locally but is not part of
+// the signed attestation payload, so it can't be used for cross-node verification.
+// This needs to be fixed before credit transfers can be implemented.
 func CalculateCreditsFromAttestations(attestations []*Attestation, systemID uuid.UUID) int64 {
 	if len(attestations) == 0 {
 		return 0
@@ -534,6 +541,7 @@ func CalculateCreditsFromAttestations(attestations []*Attestation, systemID uuid
 	// Filter to only attestations TO this system (from others)
 	var validAttestations []*Attestation
 	for _, att := range attestations {
+		// BROKEN: ToSystemID is always uuid.Nil - this check will filter out everything
 		// Must be TO us, not FROM us
 		if att.ToSystemID != systemID {
 			continue
@@ -583,6 +591,9 @@ func CalculateCreditsFromAttestations(attestations []*Attestation, systemID uuid
 
 // ValidateTransferProof validates that a transfer has sufficient proven balance
 // Returns nil if valid, error describing the problem if invalid
+//
+// BROKEN: This function relies on ToSystemID which is always uuid.Nil in the current
+// implementation. This needs to be fixed before credit transfers can be implemented.
 func ValidateTransferProof(transfer *CreditTransfer, knownTransfers []*CreditTransfer) error {
 	// 1. Verify transfer signature
 	if !transfer.Verify() {
@@ -601,6 +612,7 @@ func ValidateTransferProof(transfer *CreditTransfer, knownTransfers []*CreditTra
 
 	// 4. Verify all attestations in proof are from OTHER nodes (not self-signed)
 	for _, att := range transfer.Proof.Attestations {
+		// BROKEN: ToSystemID is always uuid.Nil - this check will skip everything
 		// Must be TO the sender (proving they received attestation)
 		if att.ToSystemID != transfer.FromSystemID {
 			continue // Skip, doesn't help their case
@@ -660,6 +672,9 @@ func ValidateTransferProof(transfer *CreditTransfer, knownTransfers []*CreditTra
 
 // BuildMinimalProof creates a proof with just enough attestations to cover the transfer amount
 // This keeps proof sizes manageable for large histories
+//
+// BROKEN: This function relies on ToSystemID which is always uuid.Nil in the current
+// implementation. This needs to be fixed before credit transfers can be implemented.
 func BuildMinimalProof(
 	system *System,
 	amount int64,
@@ -685,6 +700,7 @@ func BuildMinimalProof(
 	var running int64
 
 	for _, att := range sorted {
+		// BROKEN: ToSystemID is always uuid.Nil - this check will skip everything
 		// Only count attestations TO us from others
 		if att.ToSystemID != system.ID || att.FromSystemID == system.ID {
 			continue
