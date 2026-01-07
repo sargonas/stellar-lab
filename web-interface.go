@@ -1,6 +1,7 @@
 package main
 
 import (
+    "bytes"
     "encoding/json"
     "fmt"
     "html/template"
@@ -93,9 +94,15 @@ func (w *WebInterface) handleIndex(rw http.ResponseWriter, r *http.Request) {
     data := w.buildTemplateData()
 
     tmpl := template.Must(template.New("index").Parse(indexTemplate))
-    if err := tmpl.Execute(rw, data); err != nil {
+    
+    var buf bytes.Buffer
+    if err := tmpl.Execute(&buf, data); err != nil {
         http.Error(rw, err.Error(), http.StatusInternalServerError)
+        return
     }
+    
+    rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+    buf.WriteTo(rw)
 }
 
 // buildTemplateData gathers all data for the web template
