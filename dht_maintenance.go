@@ -331,8 +331,8 @@ func (dht *DHT) calculateCredits() {
 	calculator := NewCreditCalculator()
 	result := calculator.CalculateEarnedCredits(input)
 
-	log.Printf("  Calculation result: credits=%d, uptime_ratio=%.3f, hours=%.2f",
-		result.CreditsEarned, result.UptimeRatio, result.HoursOnline)
+	log.Printf("  Calculation result: credits=%d, base=%.2f",
+		result.CreditsEarned, result.BaseCredits)
 
 	if result.CreditsEarned > 0 {
 		// Update balance
@@ -375,8 +375,8 @@ func (dht *DHT) calculateCredits() {
 			log.Printf("  Longevity streak reset due to >30min gap")
 		}
 	} else {
-		log.Printf("  No credits earned this cycle (uptime ratio %.2f below threshold or insufficient hours %.2f)",
-			result.UptimeRatio, result.HoursOnline)
+		log.Printf("  No credits earned this cycle (base=%.2f)",
+			result.BaseCredits)
 	}
 }
 
