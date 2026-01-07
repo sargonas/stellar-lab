@@ -33,7 +33,6 @@ type WebInterfaceData struct {
     NodeHealthClass   string
     RoutingTableSize  int
     CacheSize         int
-    ActiveBuckets     int
     // Stellar Credits
     CreditBalance     int64
     CreditRank        string
@@ -110,14 +109,6 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     // Get all cached systems (known galaxy)
     allSystems := rt.GetAllCachedSystems()
 
-    // Count active buckets
-    activeBuckets := 0
-    for i := 0; i < IDBits; i++ {
-        if len(rt.GetBucketNodes(i)) > 0 {
-            activeBuckets++
-        }
-    }
-
     // Get attestation count (use GetDatabaseStats)
     dbStats, _ := w.storage.GetDatabaseStats()
     attestationCount := 0
@@ -186,7 +177,6 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         NodeHealthClass:  healthClass,
         RoutingTableSize: rtSize,
         CacheSize:        rt.GetCacheSize(),
-        ActiveBuckets:    activeBuckets,
         // Credits
         CreditBalance:     creditBalance,
         CreditRank:        creditRank,
@@ -401,49 +391,65 @@ const indexTemplate = `<!DOCTYPE html>
         #galaxy-map {
             width: 100%;
             height: 600px;
-            background: rgba(0,0,0,0.3);
+            background: radial-gradient(ellipse at center, #0a0a1a 0%, #000005 100%);
             border-radius: 12px;
             position: relative;
             overflow: hidden;
         }
-        .map-dot {
+        #galaxy-map canvas {
+            border-radius: 12px;
+        }
+        .map-controls {
             position: absolute;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
+            top: 10px;
+            right: 10px;
+            z-index: 100;
+            display: flex;
+            gap: 8px;
+        }
+        .map-btn {
+            background: rgba(96, 165, 250, 0.2);
+            border: 1px solid rgba(96, 165, 250, 0.4);
+            color: #60a5fa;
+            padding: 8px 12px;
+            border-radius: 6px;
             cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
         }
-        .map-dot.self {
-            width: 12px;
-            height: 12px;
-            box-shadow: 0 0 10px #60a5fa;
-            z-index: 10;
+        .map-btn:hover {
+            background: rgba(96, 165, 250, 0.3);
+            border-color: rgba(96, 165, 250, 0.6);
         }
-        .map-label {
+        .map-tooltip {
             position: absolute;
-            transform: translateX(-50%);
-            font-size: 11px;
-            color: #888;
-            white-space: nowrap;
+            background: rgba(0, 0, 0, 0.85);
+            border: 1px solid rgba(96, 165, 250, 0.4);
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: #e0e0e0;
+            font-size: 12px;
             pointer-events: none;
+            z-index: 200;
+            display: none;
         }
-        .map-label.self {
+        .map-tooltip .tooltip-name {
             color: #60a5fa;
             font-weight: 500;
+            margin-bottom: 4px;
         }
-        .map-connection {
-            stroke: rgba(100, 200, 255, 0.3);
-            stroke-width: 1;
-            fill: none;
+        .map-tooltip .tooltip-coords {
+            color: #888;
+            font-family: monospace;
+            font-size: 11px;
         }
-        .map-svg {
+        .map-hint {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
+            bottom: 8px;
+            right: 12px;
+            font-size: 11px;
+            color: #666;
+            z-index: 100;
         }
         .version-badge {
             display: inline-block;
@@ -494,10 +500,6 @@ const indexTemplate = `<!DOCTYPE html>
                 <div class="stat-row">
                     <span class="stat-label">Routing Table</span>
                     <span class="stat-value">{{.RoutingTableSize}} nodes</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Active Buckets</span>
-                    <span class="stat-value">{{.ActiveBuckets}} / 128</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">System Cache</span>
@@ -565,7 +567,137 @@ const indexTemplate = `<!DOCTYPE html>
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
+        // OrbitControls inline (r128 compatible)
+        THREE.OrbitControls = function(object, domElement) {
+            this.object = object;
+            this.domElement = domElement;
+            this.enabled = true;
+            this.target = new THREE.Vector3();
+            this.minDistance = 0;
+            this.maxDistance = Infinity;
+            this.enableDamping = false;
+            this.dampingFactor = 0.05;
+            this.enableZoom = true;
+            this.zoomSpeed = 1.0;
+            this.enableRotate = true;
+            this.rotateSpeed = 1.0;
+            this.enablePan = true;
+            this.panSpeed = 1.0;
+            
+            const scope = this;
+            const STATE = { NONE: -1, ROTATE: 0, DOLLY: 1, PAN: 2 };
+            let state = STATE.NONE;
+            
+            const rotateStart = new THREE.Vector2();
+            const rotateEnd = new THREE.Vector2();
+            const rotateDelta = new THREE.Vector2();
+            const panStart = new THREE.Vector2();
+            const panEnd = new THREE.Vector2();
+            const panDelta = new THREE.Vector2();
+            const dollyStart = new THREE.Vector2();
+            const dollyEnd = new THREE.Vector2();
+            const dollyDelta = new THREE.Vector2();
+            
+            let spherical = new THREE.Spherical();
+            let sphericalDelta = new THREE.Spherical();
+            let scale = 1;
+            let panOffset = new THREE.Vector3();
+            
+            this.update = function() {
+                const offset = new THREE.Vector3();
+                const quat = new THREE.Quaternion().setFromUnitVectors(object.up, new THREE.Vector3(0, 1, 0));
+                const quatInverse = quat.clone().invert();
+                const lastPosition = new THREE.Vector3();
+                
+                const position = scope.object.position;
+                offset.copy(position).sub(scope.target);
+                offset.applyQuaternion(quat);
+                spherical.setFromVector3(offset);
+                spherical.theta += sphericalDelta.theta;
+                spherical.phi += sphericalDelta.phi;
+                spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
+                spherical.radius *= scale;
+                spherical.radius = Math.max(scope.minDistance, Math.min(scope.maxDistance, spherical.radius));
+                scope.target.add(panOffset);
+                offset.setFromSpherical(spherical);
+                offset.applyQuaternion(quatInverse);
+                position.copy(scope.target).add(offset);
+                scope.object.lookAt(scope.target);
+                sphericalDelta.set(0, 0, 0);
+                scale = 1;
+                panOffset.set(0, 0, 0);
+                return false;
+            };
+            
+            function onMouseDown(event) {
+                if (!scope.enabled) return;
+                event.preventDefault();
+                if (event.button === 0) {
+                    state = STATE.ROTATE;
+                    rotateStart.set(event.clientX, event.clientY);
+                } else if (event.button === 1) {
+                    state = STATE.DOLLY;
+                    dollyStart.set(event.clientX, event.clientY);
+                } else if (event.button === 2) {
+                    state = STATE.PAN;
+                    panStart.set(event.clientX, event.clientY);
+                }
+                document.addEventListener('mousemove', onMouseMove, false);
+                document.addEventListener('mouseup', onMouseUp, false);
+            }
+            
+            function onMouseMove(event) {
+                if (!scope.enabled) return;
+                event.preventDefault();
+                if (state === STATE.ROTATE) {
+                    rotateEnd.set(event.clientX, event.clientY);
+                    rotateDelta.subVectors(rotateEnd, rotateStart).multiplyScalar(scope.rotateSpeed);
+                    sphericalDelta.theta -= 2 * Math.PI * rotateDelta.x / domElement.clientHeight;
+                    sphericalDelta.phi -= 2 * Math.PI * rotateDelta.y / domElement.clientHeight;
+                    rotateStart.copy(rotateEnd);
+                } else if (state === STATE.DOLLY) {
+                    dollyEnd.set(event.clientX, event.clientY);
+                    dollyDelta.subVectors(dollyEnd, dollyStart);
+                    if (dollyDelta.y > 0) scale /= Math.pow(0.95, scope.zoomSpeed);
+                    else if (dollyDelta.y < 0) scale *= Math.pow(0.95, scope.zoomSpeed);
+                    dollyStart.copy(dollyEnd);
+                } else if (state === STATE.PAN) {
+                    panEnd.set(event.clientX, event.clientY);
+                    panDelta.subVectors(panEnd, panStart).multiplyScalar(scope.panSpeed);
+                    const offset = new THREE.Vector3();
+                    offset.setFromMatrixColumn(scope.object.matrix, 0);
+                    offset.multiplyScalar(-panDelta.x * 0.5);
+                    panOffset.add(offset);
+                    offset.setFromMatrixColumn(scope.object.matrix, 1);
+                    offset.multiplyScalar(panDelta.y * 0.5);
+                    panOffset.add(offset);
+                    panStart.copy(panEnd);
+                }
+                scope.update();
+            }
+            
+            function onMouseUp() {
+                state = STATE.NONE;
+                document.removeEventListener('mousemove', onMouseMove, false);
+                document.removeEventListener('mouseup', onMouseUp, false);
+            }
+            
+            function onWheel(event) {
+                if (!scope.enabled || !scope.enableZoom) return;
+                event.preventDefault();
+                if (event.deltaY < 0) scale *= Math.pow(0.95, scope.zoomSpeed);
+                else if (event.deltaY > 0) scale /= Math.pow(0.95, scope.zoomSpeed);
+                scope.update();
+            }
+            
+            domElement.addEventListener('mousedown', onMouseDown, false);
+            domElement.addEventListener('wheel', onWheel, { passive: false });
+            domElement.addEventListener('contextmenu', e => e.preventDefault(), false);
+            this.update();
+        };
+
         const knownSystems = [
             {{range .KnownSystems}}
             {id: "{{.ID}}", name: "{{.Name}}", x: {{.X}}, y: {{.Y}}, z: {{.Z}}, color: "{{.Stars.Primary.Color}}"},
@@ -580,210 +712,264 @@ const indexTemplate = `<!DOCTYPE html>
             color: "{{.System.Stars.Primary.Color}}"
         };
 
-        // Map state for pan/zoom
-        let mapState = { panX: 0, panY: 0, zoom: 1, dragging: false, lastX: 0, lastY: 0 };
+        let scene, camera, renderer, controls;
+        let starMeshes = [];
         let cachedConnections = [];
 
         async function fetchConnections() {
             try {
                 const resp = await fetch('/api/connections');
-                cachedConnections = await resp.json();
+                cachedConnections = await resp.json() || [];
             } catch (e) {
                 console.error('Failed to fetch connections:', e);
                 cachedConnections = [];
             }
         }
 
-        async function renderGalaxyMap() {
-            const map = document.getElementById('galaxy-map');
-            if (!map) return;
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16) / 255,
+                g: parseInt(result[2], 16) / 255,
+                b: parseInt(result[3], 16) / 255
+            } : { r: 1, g: 1, b: 1 };
+        }
 
-            const width = map.clientWidth;
-            const height = map.clientHeight;
+        function createStarSprite(color, size, isEmissive) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            
+            const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+            const rgb = hexToRgb(color);
+            const colorStr = 'rgb(' + Math.floor(rgb.r*255) + ',' + Math.floor(rgb.g*255) + ',' + Math.floor(rgb.b*255) + ')';
+            
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.1, colorStr);
+            gradient.addColorStop(0.4, colorStr.replace('rgb', 'rgba').replace(')', ',0.6)'));
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 64, 64);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.SpriteMaterial({ 
+                map: texture, 
+                transparent: true,
+                blending: THREE.AdditiveBlending
+            });
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(size, size, 1);
+            return sprite;
+        }
 
+        function centerOnSelf() {
+            if (!controls || !camera) return;
+            
+            const targetPos = new THREE.Vector3(selfSystem.x, selfSystem.y, selfSystem.z);
+            controls.target.copy(targetPos);
+            
+            // Position camera at a nice viewing angle
+            const distance = 800;
+            camera.position.set(
+                targetPos.x + distance * 0.7,
+                targetPos.y + distance * 0.5,
+                targetPos.z + distance * 0.7
+            );
+            controls.update();
+        }
+
+        async function initGalaxyMap() {
+            const container = document.getElementById('galaxy-map');
+            if (!container) return;
+            
+            const width = container.clientWidth;
+            const height = container.clientHeight;
             if (width === 0 || height === 0) {
-                setTimeout(renderGalaxyMap, 100);
+                setTimeout(initGalaxyMap, 100);
                 return;
             }
 
-            // Fetch connections if we haven't yet
-            if (cachedConnections.length === 0 && knownSystems.length > 0) {
-                await fetchConnections();
-            }
+            // Fetch connections
+            await fetchConnections();
+
+            // Scene
+            scene = new THREE.Scene();
+            
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, width / height, 1, 50000);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(width, height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+            
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 100;
+            controls.maxDistance = 15000;
+            controls.panSpeed = 0.8;
+            controls.rotateSpeed = 0.6;
+            
+            // Add controls UI
+            const controlsDiv = document.createElement('div');
+            controlsDiv.className = 'map-controls';
+            controlsDiv.innerHTML = '<button class="map-btn" onclick="centerOnSelf()">⌂ Center on Home</button>';
+            container.appendChild(controlsDiv);
+            
+            // Add tooltip
+            const tooltip = document.createElement('div');
+            tooltip.className = 'map-tooltip';
+            tooltip.id = 'map-tooltip';
+            container.appendChild(tooltip);
+            
+            // Add hint
+            const hint = document.createElement('div');
+            hint.className = 'map-hint';
+            hint.textContent = 'Left-drag: rotate • Right-drag: pan • Scroll: zoom';
+            container.appendChild(hint);
 
             const allSystems = [selfSystem, ...knownSystems];
-            if (allSystems.length === 0) return;
-
-            // Build ID to system lookup
             const systemById = {};
             allSystems.forEach(s => { systemById[s.id] = s; });
 
-            // Check if all systems are at the same location
-            const allSameLocation = allSystems.every(s =>
-                Math.abs(s.x - selfSystem.x) < 1 && Math.abs(s.y - selfSystem.y) < 1
-            );
+            // Labels container
+            const labelsContainer = document.createElement('div');
+            labelsContainer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:hidden;';
+            container.appendChild(labelsContainer);
+            
+            const labelElements = [];
 
-            // If all at same location, spread them in a circle for visibility
-            let displaySystems = allSystems.map((s, i) => ({...s}));
-            if (allSameLocation && allSystems.length > 1) {
-                displaySystems.forEach((s, i) => {
-                    if (i === 0) return; // Keep self at center
-                    const angle = ((i - 1) / (allSystems.length - 1)) * 2 * Math.PI;
-                    const radius = Math.min(width, height) * 0.3;
-                    s.displayX = width/2 + Math.cos(angle) * radius;
-                    s.displayY = height/2 + Math.sin(angle) * radius;
+            // Add stars
+            allSystems.forEach(sys => {
+                const isSelf = sys.id === selfSystem.id;
+                const size = isSelf ? 40 : 25;
+                const star = createStarSprite(sys.color || '#ffffff', size, isSelf);
+                star.position.set(sys.x, sys.y, sys.z);
+                star.userData = { system: sys, isSelf: isSelf };
+                scene.add(star);
+                starMeshes.push(star);
+                
+                // Create HTML label
+                const label = document.createElement('div');
+                label.textContent = sys.name;
+                label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
+                label.style.color = isSelf ? '#60a5fa' : '#888';
+                if (isSelf) label.style.fontWeight = '500';
+                labelsContainer.appendChild(label);
+                labelElements.push({ element: label, position: star.position, isSelf: isSelf });
+            });
+
+            // Add connection lines
+            if (cachedConnections && cachedConnections.length > 0) {
+                const lineMaterial = new THREE.LineBasicMaterial({ 
+                    color: 0x64c8ff, 
+                    transparent: true, 
+                    opacity: 0.25
                 });
-                displaySystems[0].displayX = width/2;
-                displaySystems[0].displayY = height/2;
-            } else {
-                // Normal coordinate mapping
-                let minX = Infinity, maxX = -Infinity;
-                let minY = Infinity, maxY = -Infinity;
-
-                allSystems.forEach(s => {
-                    if (s.x < minX) minX = s.x;
-                    if (s.x > maxX) maxX = s.x;
-                    if (s.y < minY) minY = s.y;
-                    if (s.y > maxY) maxY = s.y;
-                });
-
-                let rangeX = maxX - minX || 1000;
-                let rangeY = maxY - minY || 1000;
-
-                if (rangeX < 100) { minX -= 500; maxX += 500; rangeX = maxX - minX; }
-                if (rangeY < 100) { minY -= 500; maxY += 500; rangeY = maxY - minY; }
-
-                const padX = rangeX * 0.15;
-                const padY = rangeY * 0.15;
-                minX -= padX; maxX += padX;
-                minY -= padY; maxY += padY;
-                rangeX = maxX - minX;
-                rangeY = maxY - minY;
-
-                displaySystems.forEach(s => {
-                    s.displayX = ((s.x - minX) / rangeX) * (width - 60) + 30;
-                    s.displayY = ((s.y - minY) / rangeY) * (height - 60) + 30;
+                
+                cachedConnections.forEach(conn => {
+                    const from = systemById[conn.from_id];
+                    const to = systemById[conn.to_id];
+                    if (from && to) {
+                        const points = [
+                            new THREE.Vector3(from.x, from.y, from.z),
+                            new THREE.Vector3(to.x, to.y, to.z)
+                        ];
+                        const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                        const line = new THREE.Line(geometry, lineMaterial);
+                        scene.add(line);
+                    }
                 });
             }
 
-            // Build display lookup
-            const displayById = {};
-            displaySystems.forEach(s => { displayById[s.id] = s; });
+            // Add subtle starfield background
+            const starfieldGeo = new THREE.BufferGeometry();
+            const starfieldCount = 2000;
+            const starfieldPositions = new Float32Array(starfieldCount * 3);
+            for (let i = 0; i < starfieldCount * 3; i += 3) {
+                starfieldPositions[i] = (Math.random() - 0.5) * 30000;
+                starfieldPositions[i+1] = (Math.random() - 0.5) * 30000;
+                starfieldPositions[i+2] = (Math.random() - 0.5) * 30000;
+            }
+            starfieldGeo.setAttribute('position', new THREE.BufferAttribute(starfieldPositions, 3));
+            const starfieldMat = new THREE.PointsMaterial({ color: 0x444466, size: 2, transparent: true, opacity: 0.5 });
+            const starfield = new THREE.Points(starfieldGeo, starfieldMat);
+            scene.add(starfield);
 
-            map.innerHTML = '';
+            // Center on self initially
+            centerOnSelf();
 
-            // Create transformable container
-            const container = document.createElement('div');
-            container.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;';
-            container.style.transform = 'translate(' + mapState.panX + 'px,' + mapState.panY + 'px) scale(' + mapState.zoom + ')';
-            container.style.transformOrigin = 'center center';
-
-            // Draw connection lines using SVG
-            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.setAttribute('class', 'map-svg');
-            svg.setAttribute('width', width);
-            svg.setAttribute('height', height);
-
-            cachedConnections.forEach(conn => {
-                const from = displayById[conn.from_id];
-                const to = displayById[conn.to_id];
-                if (from && to && from.displayX && to.displayX) {
-                    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                    line.setAttribute('x1', from.displayX);
-                    line.setAttribute('y1', from.displayY);
-                    line.setAttribute('x2', to.displayX);
-                    line.setAttribute('y2', to.displayY);
-                    line.setAttribute('class', 'map-connection');
-                    svg.appendChild(line);
+            // Raycaster for hover
+            const raycaster = new THREE.Raycaster();
+            raycaster.params.Sprite = { threshold: 20 };
+            const mouse = new THREE.Vector2();
+            
+            renderer.domElement.addEventListener('mousemove', (event) => {
+                const rect = renderer.domElement.getBoundingClientRect();
+                mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+                mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+                
+                raycaster.setFromCamera(mouse, camera);
+                const intersects = raycaster.intersectObjects(starMeshes);
+                
+                const tooltip = document.getElementById('map-tooltip');
+                if (intersects.length > 0) {
+                    const sys = intersects[0].object.userData.system;
+                    const isSelf = intersects[0].object.userData.isSelf;
+                    tooltip.innerHTML = '<div class="tooltip-name">' + sys.name + (isSelf ? ' (You)' : '') + '</div>' +
+                        '<div class="tooltip-coords">(' + sys.x.toFixed(1) + ', ' + sys.y.toFixed(1) + ', ' + sys.z.toFixed(1) + ')</div>';
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
+                    tooltip.style.top = (event.clientY - rect.top + 15) + 'px';
+                    renderer.domElement.style.cursor = 'pointer';
+                } else {
+                    tooltip.style.display = 'none';
+                    renderer.domElement.style.cursor = 'grab';
                 }
             });
 
-            container.appendChild(svg);
+            // Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                
+                // Update label positions
+                const widthHalf = width / 2;
+                const heightHalf = height / 2;
+                labelElements.forEach(item => {
+                    const pos = item.position.clone();
+                    pos.project(camera);
+                    
+                    // Check if in front of camera
+                    if (pos.z < 1) {
+                        item.element.style.display = 'block';
+                        item.element.style.left = (pos.x * widthHalf + widthHalf) + 'px';
+                        item.element.style.top = (-pos.y * heightHalf + heightHalf + 15) + 'px';
+                    } else {
+                        item.element.style.display = 'none';
+                    }
+                });
+                
+                renderer.render(scene, camera);
+            }
+            animate();
 
-            // Draw nodes and labels
-            displaySystems.forEach((s, idx) => {
-                const x = s.displayX;
-                const y = s.displayY;
-                const isSelf = s.id === selfSystem.id;
-
-                // Star dot
-                const dot = document.createElement('div');
-                dot.className = 'map-dot' + (isSelf ? ' self' : '');
-                dot.style.left = x + 'px';
-                dot.style.top = y + 'px';
-                dot.style.background = s.color || '#60a5fa';
-                dot.title = s.name + '\n(' + allSystems[idx].x.toFixed(1) + ', ' + allSystems[idx].y.toFixed(1) + ', ' + allSystems[idx].z.toFixed(1) + ')';
-                container.appendChild(dot);
-
-                // Label
-                const label = document.createElement('div');
-                label.className = 'map-label' + (isSelf ? ' self' : '');
-                label.style.left = x + 'px';
-                label.style.top = (y + 12) + 'px';
-                label.textContent = s.name;
-                container.appendChild(label);
+            // Handle resize
+            window.addEventListener('resize', () => {
+                const w = container.clientWidth;
+                const h = container.clientHeight;
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+                renderer.setSize(w, h);
             });
-
-            map.appendChild(container);
-
-            // Hint
-            const hint = document.createElement('div');
-            hint.style.cssText = 'position:absolute;bottom:8px;right:12px;font-size:11px;color:#666;';
-            hint.textContent = allSameLocation && allSystems.length > 1
-                ? '⚠ All at (0,0,0) - shown in circle'
-                : 'Drag to pan • Scroll to zoom';
-            map.appendChild(hint);
         }
 
-        // Pan/zoom event handlers
-        document.addEventListener('DOMContentLoaded', function() {
-            const mapEl = document.getElementById('galaxy-map');
-            if (!mapEl) return;
-
-            mapEl.style.cursor = 'grab';
-
-            mapEl.addEventListener('mousedown', function(e) {
-                mapState.dragging = true;
-                mapState.lastX = e.clientX;
-                mapState.lastY = e.clientY;
-                mapEl.style.cursor = 'grabbing';
-            });
-
-            mapEl.addEventListener('mousemove', function(e) {
-                if (!mapState.dragging) return;
-                mapState.panX += e.clientX - mapState.lastX;
-                mapState.panY += e.clientY - mapState.lastY;
-                mapState.lastX = e.clientX;
-                mapState.lastY = e.clientY;
-                renderGalaxyMap();
-            });
-
-            mapEl.addEventListener('mouseup', function() {
-                mapState.dragging = false;
-                mapEl.style.cursor = 'grab';
-            });
-
-            mapEl.addEventListener('mouseleave', function() {
-                mapState.dragging = false;
-                mapEl.style.cursor = 'grab';
-            });
-
-            mapEl.addEventListener('wheel', function(e) {
-                e.preventDefault();
-                const delta = e.deltaY > 0 ? 0.9 : 1.1;
-                mapState.zoom = Math.max(0.5, Math.min(5, mapState.zoom * delta));
-                renderGalaxyMap();
-            });
-
-            renderGalaxyMap();
-        });
-
-        window.addEventListener('resize', function() {
-            mapState.panX = 0;
-            mapState.panY = 0;
-            mapState.zoom = 1;
-            renderGalaxyMap();
-        });
+        document.addEventListener('DOMContentLoaded', initGalaxyMap);
         setTimeout(function() { location.reload(); }, 30000);
     </script>
 </body>
