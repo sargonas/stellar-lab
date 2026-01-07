@@ -308,6 +308,10 @@ rm stellar-lab.db
 ./stellar-lab -name "Sol" -public-address "you.com:7867"
 ```
 
+### You made a deployment mistake and now have duplicate systems!
+
+Oh no, you deployed your system with a bad name or other config error, fixed it, and re deployed it and now there are two on the map and in the tables? FEAR NOT! After about an hour or so the system's housekeeping will drop them off the tables and map, and after a few days they will be gone entirely!
+
 ## Contributing
 
 1. Fork the repository
