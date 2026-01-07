@@ -15,10 +15,10 @@ const (
 	IDBits = 128
 
 	// BaseBucketK is the minimum entries per bucket
-	BaseBucketK = 3
+	BaseBucketK = 5
 
 	// DefaultBucketK is used when star class isn't available
-	DefaultBucketK = 5
+	DefaultBucketK = 8
 
 	// SpatialReplacementThreshold - candidate must be this much closer (20%)
 	SpatialReplacementThreshold = 0.8
@@ -97,9 +97,9 @@ func calculateBucketK(sys *System) int {
 		return DefaultBucketK
 	}
 	maxPeers := sys.GetMaxPeers()
-	// Divide MaxPeers across expected active buckets (~10-15 for large networks)
-	// But ensure at least BaseBucketK
-	k := maxPeers / 4
+	// Half of MaxPeers gives good bucket capacity while leaving room for churn
+	// Ensures at least BaseBucketK
+	k := maxPeers / 2
 	if k < BaseBucketK {
 		k = BaseBucketK
 	}
