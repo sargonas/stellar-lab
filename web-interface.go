@@ -421,6 +421,18 @@ const indexTemplate = `<!DOCTYPE html>
             border-radius: 50%;
             box-shadow: 0 0 20px currentColor;
         }
+        .star-blackhole {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #000 0%, #000 50%, #1a0a2e 70%, #3d1a5c 85%, transparent 100%);
+            box-shadow: 0 0 15px #8b5cf6, 0 0 30px #6366f1, 0 0 45px rgba(139, 92, 246, 0.3);
+            animation: blackhole-pulse 3s ease-in-out infinite;
+        }
+        @keyframes blackhole-pulse {
+            0%, 100% { box-shadow: 0 0 15px #8b5cf6, 0 0 30px #6366f1, 0 0 45px rgba(139, 92, 246, 0.3); }
+            50% { box-shadow: 0 0 20px #a78bfa, 0 0 40px #8b5cf6, 0 0 60px rgba(139, 92, 246, 0.4); }
+        }
         .coords { font-family: monospace; color: #888; font-size: 0.9em; }
         #galaxy-map {
             width: 100%;
@@ -565,7 +577,11 @@ const indexTemplate = `<!DOCTYPE html>
                     <span class="stat-value coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</span>
                 </div>
                 <div class="star-display">
+                    {{if eq .System.Stars.Primary.Class "X"}}
+                    <div class="star-blackhole"></div>
+                    {{else}}
                     <div class="star" style="background: {{.System.Stars.Primary.Color}}; color: {{.System.Stars.Primary.Color}};"></div>
+                    {{end}}
                     {{if .System.Stars.Secondary}}
                     <div class="star" style="background: {{.System.Stars.Secondary.Color}}; color: {{.System.Stars.Secondary.Color}}; width: 24px; height: 24px;"></div>
                     {{end}}
@@ -832,11 +848,51 @@ const indexTemplate = `<!DOCTYPE html>
             } : { r: 1, g: 1, b: 1 };
         }
 
-        function createStarSprite(color, size, isSelf, isCached) {
+        function createStarSprite(color, size, isSelf, isCached, starClass) {
             const canvas = document.createElement('canvas');
             canvas.width = 64;
             canvas.height = 64;
             const ctx = canvas.getContext('2d');
+            
+            // Special rendering for black holes (Class X)
+            if (starClass === 'X') {
+                // Outer accretion disk glow
+                const outerGlow = ctx.createRadialGradient(32, 32, 20, 32, 32, 32);
+                outerGlow.addColorStop(0, 'rgba(139, 92, 246, 0)');
+                outerGlow.addColorStop(0.3, 'rgba(139, 92, 246, 0.4)');
+                outerGlow.addColorStop(0.6, 'rgba(99, 102, 241, 0.6)');
+                outerGlow.addColorStop(0.8, 'rgba(167, 139, 250, 0.3)');
+                outerGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = outerGlow;
+                ctx.fillRect(0, 0, 64, 64);
+                
+                // Inner ring (accretion disk edge)
+                ctx.beginPath();
+                ctx.arc(32, 32, 16, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(167, 139, 250, 0.8)';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                
+                // Dark center
+                const darkCenter = ctx.createRadialGradient(32, 32, 0, 32, 32, 14);
+                darkCenter.addColorStop(0, 'rgba(0, 0, 0, 1)');
+                darkCenter.addColorStop(0.7, 'rgba(10, 5, 20, 1)');
+                darkCenter.addColorStop(1, 'rgba(30, 15, 50, 0.8)');
+                ctx.fillStyle = darkCenter;
+                ctx.beginPath();
+                ctx.arc(32, 32, 14, 0, Math.PI * 2);
+                ctx.fill();
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                const material = new THREE.SpriteMaterial({ 
+                    map: texture, 
+                    transparent: true,
+                    blending: THREE.AdditiveBlending
+                });
+                const sprite = new THREE.Sprite(material);
+                sprite.scale.set(size * 1.5, size * 1.5, 1); // Black holes render larger
+                return sprite;
+            }
             
             const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
             let rgb = hexToRgb(color);
@@ -943,6 +999,7 @@ const indexTemplate = `<!DOCTYPE html>
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#60a5fa;">●</span> You</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#4ade80;">●</span> Live peers</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#996666;">●</span> Cached</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid #a78bfa;background:#111;"></span> Black hole</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Reciprocal</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;"><span style="color:#ffaa44;">┄</span> One-way</div>';
             container.appendChild(legend);
@@ -976,7 +1033,7 @@ const indexTemplate = `<!DOCTYPE html>
                 const isLive = livePeerIDs.has(sys.id);
                 const isCached = !isSelf && !isLive;
                 const size = isSelf ? 40 : (isLive ? 28 : 22);
-                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached);
+                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached, sys.starClass);
                 star.position.set(sys.x, sys.y, sys.z);
                 star.userData = { system: sys, isSelf: isSelf, isLive: isLive, isCached: isCached };
                 scene.add(star);
