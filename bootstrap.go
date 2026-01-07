@@ -40,13 +40,11 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 				continue
 			}
 			log.Printf("  Pinging cached peer: %s (%s)", peer.Name, peer.PeerAddress)
-			if _, err := dht.Ping(peer.PeerAddress); err != nil {
+			if err := dht.PingNode(peer); err != nil {
 				log.Printf("    Failed: %v", err)
-				dht.routingTable.MarkFailed(peer.ID)
 				continue
 			}
 			log.Printf("    Connected!")
-			dht.routingTable.MarkVerified(peer.ID)
 			connected++
 		}
 		if connected > 0 {
@@ -147,8 +145,8 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 	dht.routingTable.Update(sys)
 	dht.routingTable.MarkVerified(sys.ID)
 
-	// Query for nodes close to us
-	closest, err := dht.FindNodeDirect(address, dht.localSystem.ID)
+	// Query for nodes close to us - now we know who we're talking to
+	closest, err := dht.FindNodeDirectToSystem(sys, dht.localSystem.ID)
 	if err != nil {
 		return fmt.Errorf("failed to find_node from bootstrap peer: %w", err)
 	}
@@ -244,8 +242,8 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 		connected++
 		log.Printf("    Connected to %s", fullSys.Name)
 
-		// Also do a find_node to learn more peers
-		closest, err := dht.FindNodeDirect(sys.PeerAddress, dht.localSystem.ID)
+		// Also do a find_node to learn more peers - now we know the system
+		closest, err := dht.FindNodeDirectToSystem(fullSys, dht.localSystem.ID)
 		if err == nil {
 			for _, node := range closest {
 				dht.routingTable.Update(node)
@@ -294,7 +292,7 @@ func (dht *DHT) completeBootstrap() error {
 		if sys.ID == dht.localSystem.ID || sys.PeerAddress == "" {
 			continue
 		}
-		if err := dht.AnnounceTo(sys.PeerAddress); err == nil {
+		if err := dht.AnnounceToSystem(sys); err == nil {
 			announced++
 		}
 	}

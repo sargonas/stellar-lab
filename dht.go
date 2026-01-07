@@ -236,7 +236,10 @@ func (dht *DHT) handlePing(msg *DHTMessage) (*DHTMessage, error) {
 	// Mark the sender as verified since they successfully contacted us
 	dht.routingTable.MarkVerified(msg.FromSystem.ID)
 
-	return NewPingResponse(dht.localSystem, msg.RequestID)
+	// Check if sender is using old protocol (no targeted attestation)
+	dht.warnIfOldProtocol(msg)
+
+	return NewPingResponse(dht.localSystem, msg.FromSystem.ID, msg.RequestID)
 }
 
 // handleFindNode processes a find_node request
@@ -265,7 +268,7 @@ func (dht *DHT) handleFindNode(msg *DHTMessage) (*DHTMessage, error) {
 		closest = append(closest, dht.localSystem)
 	}
 
-	return NewFindNodeResponse(dht.localSystem, closest, msg.RequestID)
+	return NewFindNodeResponse(dht.localSystem, msg.FromSystem.ID, closest, msg.RequestID)
 }
 
 // handleAnnounce processes an announce request
@@ -276,7 +279,10 @@ func (dht *DHT) handleAnnounce(msg *DHTMessage) (*DHTMessage, error) {
 	// Mark as verified since they're actively announcing
 	dht.routingTable.CacheSystem(msg.FromSystem, msg.FromSystem.ID, true)
 
-	return NewAnnounceResponse(dht.localSystem, msg.RequestID)
+	// Check if sender is using old protocol (no targeted attestation)
+	dht.warnIfOldProtocol(msg)
+
+	return NewAnnounceResponse(dht.localSystem, msg.FromSystem.ID, msg.RequestID)
 }
 
 // handleResponse processes a response to a pending request
@@ -435,8 +441,12 @@ func (dht *DHT) sendRequest(address string, msg *DHTMessage) (*DHTMessage, error
 }
 
 // Ping sends a ping to a node and returns their system info
+// If the recipient's UUID is unknown (first contact), uses uuid.Nil
 func (dht *DHT) Ping(address string) (*System, error) {
-	msg, err := NewPingRequest(dht.localSystem, "")
+	// Try to look up recipient's UUID from routing table/cache
+	recipientID := dht.routingTable.GetSystemIDByAddress(address)
+
+	msg, err := NewPingRequest(dht.localSystem, recipientID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -449,13 +459,19 @@ func (dht *DHT) Ping(address string) (*System, error) {
 	return resp.FromSystem, nil
 }
 
-// PingNode pings a node by system (using its address)
+// PingNode pings a node by system (using its address and known UUID)
 func (dht *DHT) PingNode(sys *System) error {
 	if sys.PeerAddress == "" {
 		return fmt.Errorf("no peer address for %s", sys.Name)
 	}
 
-	_, err := dht.Ping(sys.PeerAddress)
+	// We know the UUID since we have the System
+	msg, err := NewPingRequest(dht.localSystem, sys.ID, "")
+	if err != nil {
+		return err
+	}
+
+	_, err = dht.sendRequest(sys.PeerAddress, msg)
 	if err != nil {
 		dht.routingTable.MarkFailed(sys.ID)
 		return err
@@ -465,9 +481,14 @@ func (dht *DHT) PingNode(sys *System) error {
 	return nil
 }
 
-// FindNode performs a single find_node query to a specific address
+// FindNodeDirect performs a single find_node query to a specific address
+// DEPRECATED: This function is no longer used internally and is scheduled for removal.
+// Use FindNodeDirectToSystem() instead when the recipient System is known.
 func (dht *DHT) FindNodeDirect(address string, targetID uuid.UUID) ([]*System, error) {
-	msg, err := NewFindNodeRequest(dht.localSystem, targetID, "")
+	// Try to look up recipient's UUID from routing table/cache
+	recipientID := dht.routingTable.GetSystemIDByAddress(address)
+
+	msg, err := NewFindNodeRequest(dht.localSystem, recipientID, targetID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -480,15 +501,90 @@ func (dht *DHT) FindNodeDirect(address string, targetID uuid.UUID) ([]*System, e
 	return resp.ClosestNodes, nil
 }
 
-// Announce sends an announce message to a specific node
+// FindNodeDirectToSystem performs a find_node query to a known system
+func (dht *DHT) FindNodeDirectToSystem(sys *System, targetID uuid.UUID) ([]*System, error) {
+	if sys.PeerAddress == "" {
+		return nil, fmt.Errorf("no peer address for %s", sys.Name)
+	}
+
+	msg, err := NewFindNodeRequest(dht.localSystem, sys.ID, targetID, "")
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := dht.sendRequest(sys.PeerAddress, msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.ClosestNodes, nil
+}
+
+// AnnounceTo sends an announce message to a specific node by address
+// DEPRECATED: This function is no longer used internally and is scheduled for removal.
+// Use AnnounceToSystem() instead when the recipient System is known.
 func (dht *DHT) AnnounceTo(address string) error {
-	msg, err := NewAnnounceRequest(dht.localSystem, "")
+	// Try to look up recipient's UUID from routing table/cache
+	recipientID := dht.routingTable.GetSystemIDByAddress(address)
+
+	msg, err := NewAnnounceRequest(dht.localSystem, recipientID, "")
 	if err != nil {
 		return err
 	}
 
 	_, err = dht.sendRequest(address, msg)
 	return err
+}
+
+// AnnounceToSystem sends an announce message to a known system
+func (dht *DHT) AnnounceToSystem(sys *System) error {
+	if sys.PeerAddress == "" {
+		return fmt.Errorf("no peer address for %s", sys.Name)
+	}
+
+	msg, err := NewAnnounceRequest(dht.localSystem, sys.ID, "")
+	if err != nil {
+		return err
+	}
+
+	_, err = dht.sendRequest(sys.PeerAddress, msg)
+	return err
+}
+
+// === Protocol Compatibility ===
+
+// Track which systems we've warned about old protocol (to avoid log spam)
+var (
+	oldProtocolWarned   = make(map[uuid.UUID]time.Time)
+	oldProtocolWarnedMu sync.RWMutex
+)
+
+// warnIfOldProtocol logs a warning if the sender is using an old protocol version
+// that doesn't include ToSystemID in attestations. Only warns once per hour per system.
+func (dht *DHT) warnIfOldProtocol(msg *DHTMessage) {
+	// Check if attestation has targeted recipient (v1.6.0+)
+	if msg.HasTargetedAttestation() {
+		return // New protocol, all good
+	}
+
+	// Rate limit warnings to once per hour per system
+	oldProtocolWarnedMu.RLock()
+	lastWarn, warned := oldProtocolWarned[msg.FromSystem.ID]
+	oldProtocolWarnedMu.RUnlock()
+
+	if warned && time.Since(lastWarn) < 1*time.Hour {
+		return // Already warned recently
+	}
+
+	// Log warning
+	log.Printf("⚠ %s (%s) is using old protocol v%s without targeted attestations. "+
+		"They should upgrade to v1.6.0+ for credit transfer support.",
+		msg.FromSystem.Name, msg.FromSystem.ID.String()[:8], msg.Version)
+
+	// Update warning time
+	oldProtocolWarnedMu.Lock()
+	oldProtocolWarned[msg.FromSystem.ID] = time.Now()
+	oldProtocolWarnedMu.Unlock()
 }
 
 // === Accessors ===

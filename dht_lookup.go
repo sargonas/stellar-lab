@@ -181,7 +181,7 @@ func (dht *DHT) queryNodesParallel(nodes []*System, targetID uuid.UUID) []queryR
 				return
 			}
 
-			closestNodes, err := dht.FindNodeDirect(sys.PeerAddress, targetID)
+			closestNodes, err := dht.FindNodeDirectToSystem(sys, targetID)
 			if err != nil {
 				responses[idx].err = err
 				return

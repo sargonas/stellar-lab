@@ -68,13 +68,11 @@ func (dht *DHT) checkPeerLiveness() {
 		}
 
 		// Ping and announce in one go
-		if _, err := dht.Ping(sys.PeerAddress); err != nil {
-			dht.routingTable.MarkFailed(sys.ID)
+		if err := dht.PingNode(sys); err != nil {
 			dead++
 		} else {
-			dht.routingTable.MarkVerified(sys.ID)
 			// Also announce ourselves so they know we're alive
-			dht.AnnounceTo(sys.PeerAddress)
+			dht.AnnounceToSystem(sys)
 			alive++
 		}
 	}
@@ -106,7 +104,7 @@ func (dht *DHT) announceToNetwork() {
 			continue
 		}
 
-		if err := dht.AnnounceTo(sys.PeerAddress); err != nil {
+		if err := dht.AnnounceToSystem(sys); err != nil {
 			log.Printf("  Failed to announce to %s: %v", sys.Name, err)
 			dht.routingTable.MarkFailed(sys.ID)
 		} else {
