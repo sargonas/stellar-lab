@@ -22,6 +22,7 @@ type WebInterface struct {
 type WebInterfaceData struct {
     System            *System
     Peers             []*System
+    PeerIDs           []string
     PeerCount         int
     MaxPeers          int
     PeerCapacityDesc  string
@@ -40,6 +41,10 @@ type WebInterfaceData struct {
     CreditRankColor   string
     NextRank          string
     CreditsToNextRank int64
+    LongevityWeeks       float64
+    LongevityBonus       float64
+    LongevityBonusPct    float64
+    LongevityProgressPct float64
 }
 
 // NewWebInterface creates a new web interface
@@ -151,10 +156,11 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         capacityDesc = "trinary system"
     }
 
-    // Get credit balance
+    // Get credit balance and longevity
     var creditBalance int64
     var creditRank, creditRankColor, nextRank string
     var creditsToNext int64
+    var longevityWeeks, longevityBonus float64
     
     balance, err := w.storage.GetCreditBalance(sys.ID)
     if err == nil {
@@ -167,11 +173,28 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
             nextRank = next.Name
             creditsToNext = needed
         }
+        // Calculate longevity
+        if balance.LongevityStart > 0 {
+            longevitySeconds := time.Now().Unix() - balance.LongevityStart
+            longevityWeeks = float64(longevitySeconds) / (7 * 24 * 3600)
+            longevityBonus = min(longevityWeeks * 0.01, 0.52)
+        }
+    }
+
+    // Calculate percentages for display
+    longevityBonusPct := longevityBonus * 100
+    longevityProgressPct := min((longevityWeeks / 52) * 100, 100)
+
+    // Build peer ID list for JS
+    peerIDs := make([]string, len(peers))
+    for i, p := range peers {
+        peerIDs[i] = p.ID.String()
     }
 
     return WebInterfaceData{
         System:           sys,
         Peers:            peers,
+        PeerIDs:          peerIDs,
         PeerCount:        rtSize,
         MaxPeers:         sys.GetMaxPeers(),
         PeerCapacityDesc: capacityDesc,
@@ -187,9 +210,13 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         // Credits
         CreditBalance:     creditBalance,
         CreditRank:        creditRank,
-        CreditRankColor:   creditRankColor,
-        NextRank:          nextRank,
-        CreditsToNextRank: creditsToNext,
+        CreditRankColor:      creditRankColor,
+        NextRank:             nextRank,
+        CreditsToNextRank:    creditsToNext,
+        LongevityWeeks:       longevityWeeks,
+        LongevityBonus:       longevityBonus,
+        LongevityBonusPct:    longevityBonusPct,
+        LongevityProgressPct: longevityProgressPct,
     }
 }
 
@@ -336,7 +363,7 @@ const indexTemplate = `<!DOCTYPE html>
             min-height: 100vh;
             padding: 20px;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1600px; margin: 0 auto; }
         h1 {
             font-size: 2.5em;
             margin-bottom: 10px;
@@ -348,7 +375,7 @@ const indexTemplate = `<!DOCTYPE html>
         .subtitle { color: #888; margin-bottom: 30px; }
         .grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 20px;
             margin-bottom: 20px;
         }
@@ -465,6 +492,53 @@ const indexTemplate = `<!DOCTYPE html>
             border-radius: 4px;
             font-size: 0.9em;
         }
+        .longevity-bar {
+            margin-top: 12px;
+            padding: 12px;
+            background: rgba(167, 139, 250, 0.1);
+            border-radius: 8px;
+        }
+        .longevity-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+        }
+        .longevity-label { color: #888; }
+        .longevity-value { color: #a78bfa; font-weight: 500; }
+        .longevity-track {
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .longevity-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #60a5fa, #a78bfa);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .longevity-note {
+            margin-top: 6px;
+            font-size: 0.75em;
+            color: #666;
+        }
+        .map-tooltip .tooltip-class {
+            color: #a78bfa;
+            font-size: 11px;
+            margin-bottom: 2px;
+        }
+        .map-tooltip .tooltip-distance {
+            color: #4ade80;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        @media (max-width: 1400px) {
+            .grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 800px) {
+            .grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -503,7 +577,7 @@ const indexTemplate = `<!DOCTYPE html>
             </div>
 
             <div class="card">
-                <h2>DHT Statistics</h2>
+                <h2>Stellar Transport</h2>
                 <div class="stat-row">
                     <span class="stat-label">Routing Table</span>
                     <span class="stat-value">{{.RoutingTableSize}} nodes</span>
@@ -528,6 +602,10 @@ const indexTemplate = `<!DOCTYPE html>
                     <span class="stat-label">Database</span>
                     <span class="stat-value">{{.DatabaseSize}}</span>
                 </div>
+                <div class="stat-row">
+                    <span class="stat-label">Uptime Streak</span>
+                    <span class="stat-value">{{printf "%.1f" .LongevityWeeks}} weeks</span>
+                </div>
             </div>
 
             <div class="card">
@@ -546,9 +624,15 @@ const indexTemplate = `<!DOCTYPE html>
                     <span class="stat-value">{{.NextRank}} ({{.CreditsToNextRank}} ✦ needed)</span>
                 </div>
                 {{end}}
-                <div style="margin-top: 15px; padding: 10px; background: rgba(167, 139, 250, 0.1); border-radius: 8px; font-size: 0.85em; color: #888;">
-                    Credits earned: ~1 per hour of verified uptime.<br>
-                    Normalized across all star types.
+                <div class="longevity-bar">
+                    <div class="longevity-header">
+                        <span class="longevity-label">Longevity Bonus</span>
+                        <span class="longevity-value">+{{printf "%.1f" .LongevityBonusPct}}%</span>
+                    </div>
+                    <div class="longevity-track">
+                        <div class="longevity-fill" style="width: {{printf "%.1f" .LongevityProgressPct}}%;"></div>
+                    </div>
+                    <div class="longevity-note">{{printf "%.1f" .LongevityWeeks}} / 52 weeks to max (+52%)</div>
                 </div>
             </div>
 
@@ -707,7 +791,7 @@ const indexTemplate = `<!DOCTYPE html>
 
         const knownSystems = [
             {{range .KnownSystems}}
-            {id: "{{.ID}}", name: "{{.Name}}", x: {{.X}}, y: {{.Y}}, z: {{.Z}}, color: "{{.Stars.Primary.Color}}"},
+            {id: "{{.ID}}", name: "{{.Name}}", x: {{.X}}, y: {{.Y}}, z: {{.Z}}, color: "{{.Stars.Primary.Color}}", starClass: "{{.Stars.Primary.Class}}", starDesc: "{{.Stars.Primary.Description}}"},
             {{end}}
         ];
         const selfSystem = {
@@ -716,11 +800,17 @@ const indexTemplate = `<!DOCTYPE html>
             x: {{.System.X}},
             y: {{.System.Y}},
             z: {{.System.Z}},
-            color: "{{.System.Stars.Primary.Color}}"
+            color: "{{.System.Stars.Primary.Color}}",
+            starClass: "{{.System.Stars.Primary.Class}}",
+            starDesc: "{{.System.Stars.Primary.Description}}"
         };
+        const livePeerIDs = new Set([
+            {{range .PeerIDs}}"{{.}}",{{end}}
+        ]);
 
         let scene, camera, renderer, controls;
         let starMeshes = [];
+        let connectionLines = [];
         let cachedConnections = [];
 
         async function fetchConnections() {
@@ -742,19 +832,28 @@ const indexTemplate = `<!DOCTYPE html>
             } : { r: 1, g: 1, b: 1 };
         }
 
-        function createStarSprite(color, size, isEmissive) {
+        function createStarSprite(color, size, isSelf, isCached) {
             const canvas = document.createElement('canvas');
             canvas.width = 64;
             canvas.height = 64;
             const ctx = canvas.getContext('2d');
             
             const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-            const rgb = hexToRgb(color);
+            let rgb = hexToRgb(color);
+            
+            // For cached (non-live) systems, desaturate and add reddish tint
+            if (isCached && !isSelf) {
+                const avg = (rgb.r + rgb.g + rgb.b) / 3;
+                rgb.r = avg * 0.6 + 0.4; // Push toward red
+                rgb.g = avg * 0.4;
+                rgb.b = avg * 0.4;
+            }
+            
             const colorStr = 'rgb(' + Math.floor(rgb.r*255) + ',' + Math.floor(rgb.g*255) + ',' + Math.floor(rgb.b*255) + ')';
             
-            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0, isCached && !isSelf ? 'rgba(255,200,200,0.8)' : 'rgba(255,255,255,1)');
             gradient.addColorStop(0.1, colorStr);
-            gradient.addColorStop(0.4, colorStr.replace('rgb', 'rgba').replace(')', ',0.6)'));
+            gradient.addColorStop(0.4, colorStr.replace('rgb', 'rgba').replace(')', ',' + (isCached ? '0.3' : '0.6') + ')'));
             gradient.addColorStop(1, 'rgba(0,0,0,0)');
             
             ctx.fillStyle = gradient;
@@ -764,11 +863,19 @@ const indexTemplate = `<!DOCTYPE html>
             const material = new THREE.SpriteMaterial({ 
                 map: texture, 
                 transparent: true,
-                blending: THREE.AdditiveBlending
+                blending: THREE.AdditiveBlending,
+                opacity: isCached && !isSelf ? 0.6 : 1.0
             });
             const sprite = new THREE.Sprite(material);
             sprite.scale.set(size, size, 1);
             return sprite;
+        }
+
+        function calculateDistance(sys1, sys2) {
+            const dx = sys1.x - sys2.x;
+            const dy = sys1.y - sys2.y;
+            const dz = sys1.z - sys2.z;
+            return Math.sqrt(dx*dx + dy*dy + dz*dz);
         }
 
         function centerOnSelf() {
@@ -828,6 +935,18 @@ const indexTemplate = `<!DOCTYPE html>
             controlsDiv.innerHTML = '<button class="map-btn" onclick="centerOnSelf()">⌂ Center on Home</button>';
             container.appendChild(controlsDiv);
             
+            // Add legend
+            const legend = document.createElement('div');
+            legend.style.cssText = 'position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 12px;font-size:11px;z-index:100;';
+            legend.innerHTML = 
+                '<div style="margin-bottom:6px;color:#888;font-weight:500;">Legend</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#60a5fa;">●</span> You</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#4ade80;">●</span> Live peers</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#996666;">●</span> Cached</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Reciprocal</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;"><span style="color:#ffaa44;">┄</span> One-way</div>';
+            container.appendChild(legend);
+            
             // Add tooltip
             const tooltip = document.createElement('div');
             tooltip.className = 'map-tooltip';
@@ -854,10 +973,12 @@ const indexTemplate = `<!DOCTYPE html>
             // Add stars
             allSystems.forEach(sys => {
                 const isSelf = sys.id === selfSystem.id;
-                const size = isSelf ? 40 : 25;
-                const star = createStarSprite(sys.color || '#ffffff', size, isSelf);
+                const isLive = livePeerIDs.has(sys.id);
+                const isCached = !isSelf && !isLive;
+                const size = isSelf ? 40 : (isLive ? 28 : 22);
+                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached);
                 star.position.set(sys.x, sys.y, sys.z);
-                star.userData = { system: sys, isSelf: isSelf };
+                star.userData = { system: sys, isSelf: isSelf, isLive: isLive, isCached: isCached };
                 scene.add(star);
                 starMeshes.push(star);
                 
@@ -865,32 +986,74 @@ const indexTemplate = `<!DOCTYPE html>
                 const label = document.createElement('div');
                 label.textContent = sys.name;
                 label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
-                label.style.color = isSelf ? '#60a5fa' : '#888';
-                if (isSelf) label.style.fontWeight = '500';
+                if (isSelf) {
+                    label.style.color = '#60a5fa';
+                    label.style.fontWeight = '500';
+                } else if (isLive) {
+                    label.style.color = '#4ade80';
+                } else {
+                    label.style.color = '#666';
+                }
                 labelsContainer.appendChild(label);
                 labelElements.push({ element: label, position: star.position, isSelf: isSelf });
             });
 
-            // Add connection lines
-            if (cachedConnections && cachedConnections.length > 0) {
-                const lineMaterial = new THREE.LineBasicMaterial({ 
-                    color: 0x64c8ff, 
-                    transparent: true, 
-                    opacity: 0.25
+            // Build reciprocity map
+            const edgeSet = new Set();
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    edgeSet.add(conn.from_id + ':' + conn.to_id);
                 });
-                
+            }
+            
+            function isReciprocal(fromId, toId) {
+                return edgeSet.has(fromId + ':' + toId) && edgeSet.has(toId + ':' + fromId);
+            }
+
+            // Add connection lines
+            const processedEdges = new Set();
+            if (cachedConnections && cachedConnections.length > 0) {
                 cachedConnections.forEach(conn => {
                     const from = systemById[conn.from_id];
                     const to = systemById[conn.to_id];
-                    if (from && to) {
-                        const points = [
-                            new THREE.Vector3(from.x, from.y, from.z),
-                            new THREE.Vector3(to.x, to.y, to.z)
-                        ];
-                        const geometry = new THREE.BufferGeometry().setFromPoints(points);
-                        const line = new THREE.Line(geometry, lineMaterial);
-                        scene.add(line);
+                    if (!from || !to) return;
+                    
+                    // Avoid drawing same edge twice
+                    const edgeKey = [conn.from_id, conn.to_id].sort().join(':');
+                    if (processedEdges.has(edgeKey)) return;
+                    processedEdges.add(edgeKey);
+                    
+                    const reciprocal = isReciprocal(conn.from_id, conn.to_id);
+                    const points = [
+                        new THREE.Vector3(from.x, from.y, from.z),
+                        new THREE.Vector3(to.x, to.y, to.z)
+                    ];
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                    
+                    let line;
+                    if (reciprocal) {
+                        // Solid line for reciprocal connections
+                        const material = new THREE.LineBasicMaterial({ 
+                            color: 0x64c8ff, 
+                            transparent: true, 
+                            opacity: 0.35
+                        });
+                        line = new THREE.Line(geometry, material);
+                    } else {
+                        // Dashed line for one-way connections
+                        const material = new THREE.LineDashedMaterial({ 
+                            color: 0xffaa44, 
+                            transparent: true, 
+                            opacity: 0.3,
+                            dashSize: 30,
+                            gapSize: 20
+                        });
+                        line = new THREE.Line(geometry, material);
+                        line.computeLineDistances();
                     }
+                    line.userData = { fromId: conn.from_id, toId: conn.to_id, reciprocal: reciprocal };
+                    scene.add(line);
+                    connectionLines.push(line);
                 });
             }
 
@@ -915,6 +1078,23 @@ const indexTemplate = `<!DOCTYPE html>
             const raycaster = new THREE.Raycaster();
             raycaster.params.Sprite = { threshold: 20 };
             const mouse = new THREE.Vector2();
+            let hoveredSystemId = null;
+            
+            function highlightConnections(systemId) {
+                connectionLines.forEach(line => {
+                    if (systemId && (line.userData.fromId === systemId || line.userData.toId === systemId)) {
+                        line.material.opacity = line.userData.reciprocal ? 0.8 : 0.6;
+                        if (line.userData.reciprocal) {
+                            line.material.color.setHex(0x60a5fa);
+                        }
+                    } else {
+                        line.material.opacity = line.userData.reciprocal ? 0.35 : 0.3;
+                        if (line.userData.reciprocal) {
+                            line.material.color.setHex(0x64c8ff);
+                        }
+                    }
+                });
+            }
             
             renderer.domElement.addEventListener('mousemove', (event) => {
                 const rect = renderer.domElement.getBoundingClientRect();
@@ -926,17 +1106,39 @@ const indexTemplate = `<!DOCTYPE html>
                 
                 const tooltip = document.getElementById('map-tooltip');
                 if (intersects.length > 0) {
-                    const sys = intersects[0].object.userData.system;
-                    const isSelf = intersects[0].object.userData.isSelf;
-                    tooltip.innerHTML = '<div class="tooltip-name">' + sys.name + (isSelf ? ' (You)' : '') + '</div>' +
-                        '<div class="tooltip-coords">(' + sys.x.toFixed(1) + ', ' + sys.y.toFixed(1) + ', ' + sys.z.toFixed(1) + ')</div>';
+                    const userData = intersects[0].object.userData;
+                    const sys = userData.system;
+                    const isSelf = userData.isSelf;
+                    const isLive = userData.isLive;
+                    const distance = calculateDistance(selfSystem, sys);
+                    
+                    let statusLabel = '';
+                    if (isSelf) statusLabel = ' <span style="color:#60a5fa">(You)</span>';
+                    else if (isLive) statusLabel = ' <span style="color:#4ade80">(Live)</span>';
+                    else statusLabel = ' <span style="color:#888">(Cached)</span>';
+                    
+                    tooltip.innerHTML = 
+                        '<div class="tooltip-name">' + sys.name + statusLabel + '</div>' +
+                        '<div class="tooltip-class">' + (sys.starDesc || sys.starClass + '-class star') + '</div>' +
+                        '<div class="tooltip-coords">(' + sys.x.toFixed(1) + ', ' + sys.y.toFixed(1) + ', ' + sys.z.toFixed(1) + ')</div>' +
+                        (isSelf ? '' : '<div class="tooltip-distance">' + distance.toFixed(1) + ' units away</div>');
                     tooltip.style.display = 'block';
                     tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
                     tooltip.style.top = (event.clientY - rect.top + 15) + 'px';
                     renderer.domElement.style.cursor = 'pointer';
+                    
+                    // Highlight connections
+                    if (hoveredSystemId !== sys.id) {
+                        hoveredSystemId = sys.id;
+                        highlightConnections(sys.id);
+                    }
                 } else {
                     tooltip.style.display = 'none';
                     renderer.domElement.style.cursor = 'grab';
+                    if (hoveredSystemId !== null) {
+                        hoveredSystemId = null;
+                        highlightConnections(null);
+                    }
                 }
             });
 
