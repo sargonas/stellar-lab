@@ -18,7 +18,7 @@ Stellar Lab creates a virtual galaxy where each participant runs a node represen
 - **Unique Identity**: UUID generated from hardware fingerprint, cryptographically bound to your keypair
 - **Multi-Star Systems**: Single (50%), Binary (40%), and Trinary (10%) system probabilities
 - **Star Classification**: Semi-Realistic distribution (O, B, A, F, G, K, M classes) adjusted for practical network sizes
-- **Peer Capacity**: Star class determines max connections (M-class: 5, scaling up to O-class: 12+)
+- **Peer Capacity**: Star class determines max connections (M-class: 10, scaling up to O-class: 18+)
 - **Spatial Clustering**: New nodes spawn 100-500 units from their sponsor system
 - **DHT Routing**: Kademlia-style k-bucket routing with XOR distance metric
 - **Cryptographic Identity**: Ed25519 keypairs for authentication
@@ -196,13 +196,13 @@ Star class determines maximum routing table connections:
 | Class | Type | Distribution | Max Peers |
 |-------|------|--------------|-----------|
 | X | Supermassive Black Hole | Unique (Genesis only) | 20 |
-| O | Blue Supergiant | 0.5% | 12 |
-| B | Blue Giant | 2% | 10 |
-| A | White Star | 5% | 9 |
-| F | Yellow-White | 10% | 8 |
-| G | Yellow Dwarf | 17.5% | 7 |
-| K | Orange Dwarf | 25% | 6 |
-| M | Red Dwarf | 40% | 5 |
+| O | Blue Supergiant | 0.5% | 18 |
+| B | Blue Giant | 2% | 16 |
+| A | White Star | 5% |15 |
+| F | Yellow-White | 10% | 14 |
+| G | Yellow Dwarf | 17.5% | 12 |
+| K | Orange Dwarf | 25% | 11 |
+| M | Red Dwarf | 40% | 10 |
 
 **Multi-star bonuses:** Binary systems +3 max peers, Trinary +5
 

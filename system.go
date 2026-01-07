@@ -377,28 +377,28 @@ type DiscoverySystem struct {
 // Note: This affects topology only, not attestation rate (which is capped)
 func (s *System) GetMaxPeers() int {
     if s.Stars.Primary.Class == "" {
-        return 5 // Default fallback
+        return 10 // Default fallback
     }
 
-    // Base peers by primary star class
-    basePeers := 5
+    // Base peers by primary star class (10-20 range)
+    basePeers := 10
     switch s.Stars.Primary.Class {
     case "X": // Supermassive Black Hole - galactic core hub
         return 20
     case "O":
-        basePeers = 12
+        basePeers = 18
     case "B":
-        basePeers = 10
+        basePeers = 16
     case "A":
-        basePeers = 9
+        basePeers = 15
     case "F":
-        basePeers = 8
+        basePeers = 14
     case "G":
-        basePeers = 7
+        basePeers = 12
     case "K":
-        basePeers = 6
+        basePeers = 11
     case "M":
-        basePeers = 5
+        basePeers = 10
     }
 
     // Bonus for multi-star systems
