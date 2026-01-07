@@ -30,18 +30,18 @@ type MultiStarSystem struct {
 
 // System represents a star system node in the network
 type System struct {
-	ID          uuid.UUID         `json:"id"`
-	Name        string            `json:"name"`
-	X           float64           `json:"x"`
-	Y           float64           `json:"y"`
-	Z           float64           `json:"z"`
-	Stars       MultiStarSystem   `json:"stars"`
-	CreatedAt   time.Time         `json:"created_at"`
-	LastSeenAt  time.Time         `json:"last_seen_at"`
-	Address     string            `json:"address"` // network address (host:port)
-	Keys        *KeyPair          `json:"-"`       // Cryptographic keys (never serialized)
-	PeerAddress string            `json:"peer_address"` // Peer mesh address
-	SponsorID   *uuid.UUID        `json:"sponsor_id,omitempty"` // Node that sponsored our network entry
+	ID          uuid.UUID       `json:"id"`
+	Name        string          `json:"name"`
+	X           float64         `json:"x"`
+	Y           float64         `json:"y"`
+	Z           float64         `json:"z"`
+	Stars       MultiStarSystem `json:"stars"`
+	CreatedAt   time.Time       `json:"created_at"`
+	LastSeenAt  time.Time       `json:"last_seen_at"`
+	Address     string          `json:"address"`      // network address (host:port)
+	Keys        *KeyPair        `json:"-"`            // Cryptographic keys (never serialized)
+	PeerAddress string          `json:"peer_address"` // Peer mesh address
+	SponsorID   *uuid.UUID      `json:"sponsor_id,omitempty"` // Node that sponsored our network entry
 }
 
 // generateSingleStar creates a deterministic star from a seed
@@ -137,12 +137,12 @@ func (s *System) GenerateMultiStarSystem() {
 	} else if systemTypeRoll < 90 { // 40% - Binary system
 		isBinary = true
 		count = 2
-		
+
 		// Secondary star is usually smaller than primary
 		// Use a modified seed to ensure different star type
 		secondarySeed := s.DeterministicSeed("secondary_star")
 		secondaryStar := generateSingleStar(secondarySeed)
-		
+
 		// Secondary stars are typically lower mass - shift distribution
 		// If we got a large star, re-roll with bias toward smaller classes
 		if secondaryStar.Class == "O" || secondaryStar.Class == "B" || secondaryStar.Class == "A" {
@@ -150,20 +150,20 @@ func (s *System) GenerateMultiStarSystem() {
 			secondarySeed = secondarySeed ^ 0xFFFFFFFF // XOR to change seed
 			secondaryStar = generateSingleStar(secondarySeed + 50000) // Offset pushes toward M/K
 		}
-		
+
 		secondary = &secondaryStar
 	} else { // 10% - Trinary system
 		isTrinary = true
 		count = 3
-		
+
 		// Generate secondary
 		secondarySeed := s.DeterministicSeed("secondary_star")
 		secondaryStar := generateSingleStar(secondarySeed)
-		
+
 		// Generate tertiary (usually smallest)
 		tertiarySeed := s.DeterministicSeed("tertiary_star")
 		tertiaryStar := generateSingleStar(tertiarySeed + 70000) // Offset toward smaller stars
-		
+
 		// Bias both toward smaller classes
 		if secondaryStar.Class == "O" || secondaryStar.Class == "B" {
 			secondaryStar = generateSingleStar(secondarySeed + 50000)
@@ -171,7 +171,7 @@ func (s *System) GenerateMultiStarSystem() {
 		if tertiaryStar.Class == "O" || tertiaryStar.Class == "B" || tertiaryStar.Class == "A" {
 			tertiaryStar = generateSingleStar(tertiarySeed + 80000)
 		}
-		
+
 		secondary = &secondaryStar
 		tertiary = &tertiaryStar
 	}
@@ -191,7 +191,11 @@ func (s *System) GenerateMultiStarSystem() {
 func ValidateStarSystem(sys *System) bool {
 	// Skip validation for class X (genesis black hole - special case)
 	if sys.Stars.Primary.Class == "X" {
-		// Only the genesis UUID is allowed to have class X
+		// In isolated mode, allow any Class X (for dev/test networks)
+		if isolatedMode != nil && *isolatedMode {
+			return true
+		}
+		// In production, only the real genesis UUID is allowed to have class X
 		return sys.ID.String() == "f467e75d-00b8-5ac7-9f0f-4e7cd1c8eb20"
 	}
 
@@ -222,12 +226,12 @@ func (s *System) GenerateCoordinates(nearbySystem *System) {
 // Range: -10000 to +10000 for each axis
 func (s *System) GenerateDeterministicCoordinates() {
 	hash := sha256.Sum256(s.ID[:])
-	
+
 	// Use different parts of the hash for each coordinate
 	xSeed := binary.BigEndian.Uint64(hash[0:8])
 	ySeed := binary.BigEndian.Uint64(hash[8:16])
 	zSeed := binary.BigEndian.Uint64(hash[16:24])
-	
+
 	// Normalize to -10000 to +10000 range
 	maxUint64 := float64(math.MaxUint64)
 	s.X = (float64(xSeed) / maxUint64 * 20000) - 10000
@@ -242,32 +246,32 @@ func (s *System) GenerateClusteredCoordinates(sponsor *System) {
 	// Hash our UUID + sponsor's UUID together for deterministic positioning
 	combined := append(s.ID[:], sponsor.ID[:]...)
 	hash := sha256.Sum256(combined)
-	
+
 	// Use hash to generate deterministic spherical coordinates
 	// This gives more natural distribution than axis-aligned offsets
 	distSeed := binary.BigEndian.Uint64(hash[0:8])
 	thetaSeed := binary.BigEndian.Uint64(hash[8:16])  // azimuth angle
 	phiSeed := binary.BigEndian.Uint64(hash[16:24])   // polar angle
-	
+
 	maxUint64 := float64(math.MaxUint64)
-	
+
 	// Distance: 100-500 units from sponsor
 	distance := (float64(distSeed)/maxUint64)*400.0 + 100.0
-	
+
 	// Spherical coordinates for even distribution
 	theta := (float64(thetaSeed) / maxUint64) * 2 * math.Pi        // 0 to 2π
 	phi := math.Acos(2*(float64(phiSeed)/maxUint64) - 1)           // 0 to π (uniform on sphere)
-	
+
 	// Convert to Cartesian offsets
 	xOffset := distance * math.Sin(phi) * math.Cos(theta)
 	yOffset := distance * math.Sin(phi) * math.Sin(theta)
 	zOffset := distance * math.Cos(phi)
-	
+
 	// Apply offsets to sponsor's coordinates
 	s.X = sponsor.X + xOffset
 	s.Y = sponsor.Y + yOffset
 	s.Z = sponsor.Z + zOffset
-	
+
 	// Store sponsor reference
 	s.SponsorID = &sponsor.ID
 }
@@ -277,21 +281,21 @@ func (s *System) GenerateClusteredCoordinates(sponsor *System) {
 func CalculateExpectedCoordinates(systemID, sponsorID uuid.UUID, sponsorX, sponsorY, sponsorZ float64) (x, y, z float64) {
 	combined := append(systemID[:], sponsorID[:]...)
 	hash := sha256.Sum256(combined)
-	
+
 	distSeed := binary.BigEndian.Uint64(hash[0:8])
 	thetaSeed := binary.BigEndian.Uint64(hash[8:16])
 	phiSeed := binary.BigEndian.Uint64(hash[16:24])
-	
+
 	maxUint64 := float64(math.MaxUint64)
-	
+
 	distance := (float64(distSeed)/maxUint64)*400.0 + 100.0
 	theta := (float64(thetaSeed) / maxUint64) * 2 * math.Pi
 	phi := math.Acos(2*(float64(phiSeed)/maxUint64) - 1)
-	
+
 	xOffset := distance * math.Sin(phi) * math.Cos(theta)
 	yOffset := distance * math.Sin(phi) * math.Sin(theta)
 	zOffset := distance * math.Cos(phi)
-	
+
 	return sponsorX + xOffset, sponsorY + yOffset, sponsorZ + zOffset
 }
 
@@ -301,14 +305,19 @@ func CalculateExpectedCoordinates(systemID, sponsorID uuid.UUID, sponsorX, spons
 func ValidateCoordinates(sys *System, lookupSponsor func(uuid.UUID) *System) bool {
 	// No sponsor = must be genesis
 	if sys.SponsorID == nil {
-		// Only genesis (class X) is allowed without a sponsor
+		// Class X (genesis) is allowed without a sponsor if at origin
 		if sys.Stars.Primary.Class == "X" {
+			// In isolated mode, any Class X at origin is valid
+			if isolatedMode != nil && *isolatedMode {
+				return sys.X == 0 && sys.Y == 0 && sys.Z == 0
+			}
+			// In production, only the real genesis UUID at origin is valid
 			return sys.X == 0 && sys.Y == 0 && sys.Z == 0
 		}
 		// All other nodes must have a sponsor
 		return false
 	}
-	
+
 	// Has sponsor - look them up
 	sponsor := lookupSponsor(*sys.SponsorID)
 	if sponsor == nil {
@@ -316,10 +325,10 @@ func ValidateCoordinates(sys *System, lookupSponsor func(uuid.UUID) *System) boo
 		// Accept for now (lenient) - we'll learn sponsor eventually
 		return true
 	}
-	
+
 	// Calculate expected position
 	expX, expY, expZ := CalculateExpectedCoordinates(sys.ID, *sys.SponsorID, sponsor.X, sponsor.Y, sponsor.Z)
-	
+
 	return coordsApproxEqual(sys.X, expX) &&
 		coordsApproxEqual(sys.Y, expY) &&
 		coordsApproxEqual(sys.Z, expZ)
@@ -360,53 +369,53 @@ type Peer struct {
 }
 
 type DiscoverySystem struct {
-    ID                 string  `json:"id"`
-    Name               string  `json:"name"`
-    X                  float64 `json:"x"`
-    Y                  float64 `json:"y"`
-    Z                  float64 `json:"z"`
-    PeerAddress        string  `json:"peer_address"`
-    DistanceFromOrigin float64 `json:"distance_from_origin"`
-    CurrentPeers       int     `json:"current_peers"`
-    MaxPeers           int     `json:"max_peers"`
-    HasCapacity        bool    `json:"has_capacity"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	X                  float64 `json:"x"`
+	Y                  float64 `json:"y"`
+	Z                  float64 `json:"z"`
+	PeerAddress        string  `json:"peer_address"`
+	DistanceFromOrigin float64 `json:"distance_from_origin"`
+	CurrentPeers       int     `json:"current_peers"`
+	MaxPeers           int     `json:"max_peers"`
+	HasCapacity        bool    `json:"has_capacity"`
 }
 
 // GetMaxPeers returns the maximum peer connections based on star configuration
 // Larger/rarer star systems can maintain more connections, acting as network hubs
 // Note: This affects topology only, not attestation rate (which is capped)
 func (s *System) GetMaxPeers() int {
-    if s.Stars.Primary.Class == "" {
-        return 10 // Default fallback
-    }
+	if s.Stars.Primary.Class == "" {
+		return 10 // Default fallback
+	}
 
-    // Base peers by primary star class (10-20 range)
-    basePeers := 10
-    switch s.Stars.Primary.Class {
-    case "X": // Supermassive Black Hole - galactic core hub
-        return 20
-    case "O":
-        basePeers = 18
-    case "B":
-        basePeers = 16
-    case "A":
-        basePeers = 15
-    case "F":
-        basePeers = 14
-    case "G":
-        basePeers = 12
-    case "K":
-        basePeers = 11
-    case "M":
-        basePeers = 10
-    }
+	// Base peers by primary star class (10-20 range)
+	basePeers := 10
+	switch s.Stars.Primary.Class {
+	case "X": // Supermassive Black Hole - galactic core hub
+		return 20
+	case "O":
+		basePeers = 18
+	case "B":
+		basePeers = 16
+	case "A":
+		basePeers = 15
+	case "F":
+		basePeers = 14
+	case "G":
+		basePeers = 12
+	case "K":
+		basePeers = 11
+	case "M":
+		basePeers = 10
+	}
 
-    // Bonus for multi-star systems
-    if s.Stars.IsTrinary {
-        basePeers += 5
-    } else if s.Stars.IsBinary {
-        basePeers += 3
-    }
+	// Bonus for multi-star systems
+	if s.Stars.IsTrinary {
+		basePeers += 5
+	} else if s.Stars.IsBinary {
+		basePeers += 3
+	}
 
-    return basePeers
+	return basePeers
 }
