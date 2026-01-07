@@ -631,10 +631,6 @@ const indexTemplate = `<!DOCTYPE html>
                     <span class="stat-label">Database</span>
                     <span id="stat-dbsize" class="stat-value">{{.DatabaseSize}}</span>
                 </div>
-                <div class="stat-row">
-                    <span class="stat-label">Uptime Streak</span>
-                    <span id="stat-uptime" class="stat-value">{{printf "%.1f" .LongevityWeeks}} weeks</span>
-                </div>
             </div>
 
             <div class="card">
@@ -1336,7 +1332,6 @@ const indexTemplate = `<!DOCTYPE html>
                 document.getElementById('stat-longbonus').textContent = '+' + longevityBonus.toFixed(1) + '%';
                 document.getElementById('stat-longbar').style.width = longevityProgress.toFixed(1) + '%';
                 document.getElementById('stat-longweeks').textContent = longevityWeeks.toFixed(1) + ' / 52 weeks to max (+52%)';
-                document.getElementById('stat-uptime').textContent = longevityWeeks.toFixed(1) + ' weeks';
                 
                 // Fetch stats
                 const statsResp = await fetch('/api/stats');
