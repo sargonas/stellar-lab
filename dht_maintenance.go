@@ -58,7 +58,7 @@ func (dht *DHT) checkPeerLiveness() {
 	}
 
 	log.Printf("Checking liveness of %d peers...", len(nodes))
-	
+
 	alive := 0
 	dead := 0
 
@@ -232,13 +232,13 @@ func (dht *DHT) GetNetworkStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"local_id":         dht.localSystem.ID.String(),
-		"local_name":       dht.localSystem.Name,
+		"local_id":           dht.localSystem.ID.String(),
+		"local_name":         dht.localSystem.Name,
 		"routing_table_size": rtSize,
-		"cache_size":       cacheSize,
-		"active_buckets":   activeBuckets,
-		"bucket_k":         dht.routingTable.bucketK,
-		"max_peers":        dht.localSystem.GetMaxPeers(),
+		"cache_size":         cacheSize,
+		"active_buckets":     activeBuckets,
+		"bucket_k":           dht.routingTable.bucketK,
+		"max_peers":          dht.localSystem.GetMaxPeers(),
 	}
 }
 
@@ -274,21 +274,29 @@ func (dht *DHT) creditCalculationLoop() {
 
 // calculateCredits computes and stores earned credits based on attestations
 func (dht *DHT) calculateCredits() {
+	log.Printf("Calculating stellar credits...")
+
 	// Get current balance
 	balance, err := dht.storage.GetCreditBalance(dht.localSystem.ID)
 	if err != nil {
-		log.Printf("Failed to get credit balance: %v", err)
+		log.Printf("  ERROR: Failed to get credit balance: %v", err)
 		return
 	}
+
+	log.Printf("  Current state: balance=%d, last_calculated=%d, longevity_start=%d",
+		balance.Balance, balance.LastUpdated, balance.LongevityStart)
 
 	// Get attestations since last calculation
 	attestations, err := dht.storage.GetAttestationsSince(dht.localSystem.ID, balance.LastUpdated)
 	if err != nil {
-		log.Printf("Failed to get attestations: %v", err)
+		log.Printf("  ERROR: Failed to get attestations: %v", err)
 		return
 	}
 
+	log.Printf("  Found %d attestations since last calculation", len(attestations))
+
 	if len(attestations) == 0 {
+		log.Printf("  No new attestations - skipping calculation")
 		return
 	}
 
@@ -298,10 +306,15 @@ func (dht *DHT) calculateCredits() {
 		peerCount = 1 // Avoid division by zero
 	}
 
+	log.Printf("  Current peer count: %d", peerCount)
+
 	// Calculate inputs for credit calculation
 	bridgeScore := dht.calculateBridgeScore()
 	galaxySize := dht.routingTable.GetCacheSize() + 1 // +1 for self
 	reciprocityRatio := dht.calculateReciprocityRatio(attestations)
+
+	log.Printf("  Inputs: bridge_score=%.3f, galaxy_size=%d, reciprocity=%.3f",
+		bridgeScore, galaxySize, reciprocityRatio)
 
 	// Build calculation input
 	input := CalculationInput{
@@ -318,9 +331,8 @@ func (dht *DHT) calculateCredits() {
 	calculator := NewCreditCalculator()
 	result := calculator.CalculateEarnedCredits(input)
 
-	if result.CreditsEarned == 0 && len(attestations) > 0 {
-		log.Printf("Credit calculation: %d attestations but 0 credits (insufficient uptime ratio)", len(attestations))
-	}
+	log.Printf("  Calculation result: credits=%d, uptime_ratio=%.3f, hours=%.2f",
+		result.CreditsEarned, result.UptimeRatio, result.HoursOnline)
 
 	if result.CreditsEarned > 0 {
 		// Update balance
@@ -330,12 +342,12 @@ func (dht *DHT) calculateCredits() {
 		balance.LongevityStart = result.NewLongevityStart
 
 		if err := dht.storage.SaveCreditBalance(balance); err != nil {
-			log.Printf("Failed to save credit balance: %v", err)
+			log.Printf("  ERROR: Failed to save credit balance: %v", err)
 			return
 		}
 
 		rank := GetRank(balance.Balance)
-		
+
 		// Build bonus summary for logging
 		bonusParts := []string{}
 		if result.Bonuses.Bridge > 0.001 {
@@ -352,16 +364,19 @@ func (dht *DHT) calculateCredits() {
 		}
 
 		if len(bonusParts) > 0 {
-			log.Printf("Earned %d stellar credits [%s] (total: %d, rank: %s)", 
+			log.Printf("  ✦ Earned %d stellar credits [%s] (total: %d, rank: %s)",
 				result.CreditsEarned, strings.Join(bonusParts, ", "), balance.Balance, rank.Name)
 		} else {
-			log.Printf("Earned %d stellar credits (total: %d, rank: %s)", 
+			log.Printf("  ✦ Earned %d stellar credits (total: %d, rank: %s)",
 				result.CreditsEarned, balance.Balance, rank.Name)
 		}
 
 		if result.LongevityBroken {
 			log.Printf("  Longevity streak reset due to >30min gap")
 		}
+	} else {
+		log.Printf("  No credits earned this cycle (uptime ratio %.2f below threshold or insufficient hours %.2f)",
+			result.UptimeRatio, result.HoursOnline)
 	}
 }
 
@@ -375,7 +390,7 @@ func (dht *DHT) calculateBridgeScore() float64 {
 	// For each peer, estimate their connectivity
 	peerConnectivity := make([]int, 0, len(peers))
 	totalConnectivity := 0
-	
+
 	for _, peer := range peers {
 		// Estimate peer's connectivity based on their max peers (star class)
 		estimatedConns := peer.GetMaxPeers() / 2
@@ -404,7 +419,7 @@ func (dht *DHT) calculateReciprocityRatio(attestations []*Attestation) float64 {
 	// Build set of peers we've heard FROM (they attested to us)
 	heardFrom := make(map[string]bool)
 	myID := dht.localSystem.ID.String()
-	
+
 	for _, att := range attestations {
 		// If attestation is TO us (from a peer)
 		if att.ToSystemID.String() == myID {
