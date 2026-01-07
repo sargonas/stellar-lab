@@ -120,6 +120,12 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 			return fmt.Errorf("failed to parse peer system info: %w", err)
 		}
 
+		// Don't bootstrap from ourselves - this happens when a node points to itself
+		// for isolation (e.g., dev cluster node 1). Fail cleanly without state mutation.
+		if peerSys.ID == dht.localSystem.ID {
+			return fmt.Errorf("cannot bootstrap from self (isolated mode)")
+		}
+
 		// Generate our deterministic coordinates based on this sponsor
 		dht.localSystem.GenerateClusteredCoordinates(&peerSys)
 		
