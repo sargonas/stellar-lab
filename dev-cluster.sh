@@ -1,5 +1,6 @@
 #!/bin/bash
 # dev-cluster.sh - Spin up a local N-node cluster from source
+# Uses -isolated flag to create a completely separate test network
 
 set -e
 
@@ -40,17 +41,17 @@ start_node() {
         return
     fi
     
+    # All nodes use -isolated flag to prevent any contact with production network
     # All nodes bootstrap to node 1's DHT port
-    # Node 1 bootstrapping to itself fails gracefully and starts isolated
+    # Node 1 bootstrapping to itself triggers genesis mode (becomes Class X black hole)
     # Nodes 2+ successfully connect to node 1 and discover each other via DHT
-    local bootstrap_arg="-bootstrap=localhost:$BASE_DHT_PORT"
-    
     $BINARY \
         -name="$name" \
         -address="0.0.0.0:$web_port" \
         -public-address="localhost:$dht_port" \
         -db="$db" \
-        $bootstrap_arg \
+        -isolated \
+        -bootstrap="localhost:$BASE_DHT_PORT" \
         > "$log" 2>&1 &
     
     echo $! > "$pid_file"
@@ -64,7 +65,7 @@ start() {
         build
     fi
     
-    echo -e "${YELLOW}Starting $NODES nodes...${NC}"
+    echo -e "${YELLOW}Starting $NODES nodes in isolated mode...${NC}"
     
     # Start node 1 first, give it a moment to bind
     start_node 1
@@ -81,6 +82,8 @@ start() {
     for n in $(seq 1 $NODES); do
         echo "  Node $n: http://localhost:$((BASE_WEB_PORT + n - 1))"
     done
+    echo ""
+    echo -e "${YELLOW}Note:${NC} Node 1 is the genesis black hole (Class X) at origin"
 }
 
 stop() {
@@ -168,5 +171,8 @@ case "${1:-}" in
         echo "  clean          Stop and wipe all data"
         echo ""
         echo "Set STELLAR_DEV_NODES=N to change cluster size (default: 5)"
+        echo ""
+        echo "This creates a fully isolated test network that never contacts"
+        echo "production seed nodes. Node 1 becomes the genesis black hole."
         ;;
 esac

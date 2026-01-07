@@ -54,13 +54,27 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		log.Printf("Could not reach any cached peers, falling back to bootstrap...")
 	}
 
-	// If we have a direct bootstrap peer by cli parameter, try that ONLY (no fallback to seed list)
+	// If we have a direct bootstrap peer by cli parameter, try that
 	if config.BootstrapPeer != "" {
-		if err := dht.bootstrapFromPeer(config.BootstrapPeer); err != nil {
+		err := dht.bootstrapFromPeer(config.BootstrapPeer)
+		if err != nil {
+			// In isolated mode, failing to bootstrap means we're the genesis node
+			if isolatedMode != nil && *isolatedMode {
+				log.Printf("Isolated mode: becoming genesis node")
+				dht.becomeGenesisNode()
+				return nil
+			}
 			return fmt.Errorf("direct bootstrap peer failed: %w", err)
 		}
 		log.Printf("Successfully bootstrapped from direct peer")
 		return dht.completeBootstrap()
+	}
+
+	// In isolated mode with no bootstrap peer, become genesis immediately
+	if isolatedMode != nil && *isolatedMode {
+		log.Printf("Isolated mode: no bootstrap peer specified, starting as genesis")
+		dht.becomeGenesisNode()
+		return nil
 	}
 
 	// Try the seed nodes
@@ -76,17 +90,19 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		}
 	}
 
-	// Try fetching seed nodes from GitHub
-	log.Printf("Fetching seed nodes from GitHub...")
-	seedNodes := FetchSeedNodes()
-	for _, seedAddr := range seedNodes {
-		log.Printf("Trying seed node: %s", seedAddr)
-		if err := dht.bootstrapFromSeed(seedAddr); err != nil {
-			log.Printf("  Failed: %v", err)
-			continue
+	// Try fetching seed nodes from GitHub (only if not in isolated mode)
+	if isolatedMode == nil || !*isolatedMode {
+		log.Printf("Fetching seed nodes from GitHub...")
+		seedNodes := FetchSeedNodes()
+		for _, seedAddr := range seedNodes {
+			log.Printf("Trying seed node: %s", seedAddr)
+			if err := dht.bootstrapFromSeed(seedAddr); err != nil {
+				log.Printf("  Failed: %v", err)
+				continue
+			}
+			log.Printf("Successfully bootstrapped from seed node")
+			return dht.completeBootstrap()
 		}
-		log.Printf("Successfully bootstrapped from seed node")
-		return dht.completeBootstrap()
 	}
 
 	// When no bootstrap sources available
@@ -100,6 +116,36 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 	log.Printf("  Your node is running but isolated")
 	log.Printf("  Other nodes can still connect to you directly")
 	return nil
+}
+
+// becomeGenesisNode converts this node into the genesis black hole for an isolated network
+func (dht *DHT) becomeGenesisNode() {
+	// Set coordinates to origin
+	dht.localSystem.X = 0
+	dht.localSystem.Y = 0
+	dht.localSystem.Z = 0
+	dht.localSystem.SponsorID = nil
+
+	// Convert to Class X black hole
+	dht.localSystem.Stars = MultiStarSystem{
+		Primary: StarType{
+			Class:       "X",
+			Description: "Supermassive Black Hole",
+			Color:       "#000000",
+			Temperature: 0,
+			Luminosity:  0,
+		},
+		IsBinary:  false,
+		IsTrinary: false,
+		Count:     1,
+	}
+
+	// Save to database
+	if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
+		log.Printf("Warning: failed to save genesis state: %v", err)
+	}
+
+	log.Printf("✦ Now operating as genesis black hole at origin (0,0,0) ✦")
 }
 
 // bootstrapFromPeer bootstraps from a known peer address
@@ -128,11 +174,11 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 
 		// Generate our deterministic coordinates based on this sponsor
 		dht.localSystem.GenerateClusteredCoordinates(&peerSys)
-		
+
 		log.Printf("  Assigned sponsor: %s (%s)", peerSys.Name, peerSys.ID.String()[:8])
-		log.Printf("  New coordinates: (%.2f, %.2f, %.2f)", 
+		log.Printf("  New coordinates: (%.2f, %.2f, %.2f)",
 			dht.localSystem.X, dht.localSystem.Y, dht.localSystem.Z)
-		
+
 		// Save updated coordinates to database
 		if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
 			log.Printf("  Warning: failed to save coordinates: %v", err)
@@ -197,7 +243,7 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 				break
 			}
 		}
-		
+
 		if sponsor != nil {
 			sponsorID, err := uuid.Parse(sponsor.ID)
 			if err == nil {
@@ -208,14 +254,14 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 					Y:  sponsor.Y,
 					Z:  sponsor.Z,
 				}
-				
+
 				// Generate our deterministic coordinates based on sponsor
 				dht.localSystem.GenerateClusteredCoordinates(sponsorSys)
-				
+
 				log.Printf("  Assigned sponsor: %s (%s)", sponsor.Name, sponsor.ID[:8])
-				log.Printf("  New coordinates: (%.2f, %.2f, %.2f)", 
+				log.Printf("  New coordinates: (%.2f, %.2f, %.2f)",
 					dht.localSystem.X, dht.localSystem.Y, dht.localSystem.Z)
-				
+
 				// Save updated coordinates to database
 				if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
 					log.Printf("  Warning: failed to save coordinates: %v", err)

@@ -15,6 +15,9 @@ import (
 	"github.com/google/uuid"
 )
 
+// Global flag for isolated mode (accessible from bootstrap.go)
+var isolatedMode *bool
+
 func main() {
 	// Parse command line flags (CLI args override environment variables)
 	name := flag.String("name", getEnv("STELLAR_NAME", ""), "Name for this star system")
@@ -23,6 +26,7 @@ func main() {
 	address := flag.String("address", getEnv("STELLAR_ADDRESS", "0.0.0.0:8080"), "Address to bind web UI server (host:port)")
 	publicAddr := flag.String("public-address", getEnv("STELLAR_PUBLIC_ADDRESS", ""), "Public address for peer connections (host:port)")
 	bootstrapPeer := flag.String("bootstrap", getEnv("STELLAR_BOOTSTRAP", ""), "Bootstrap peer address (host:port)")
+	isolatedMode = flag.Bool("isolated", false, "Isolated network mode (skips seed nodes, first node becomes genesis)")
 	flag.Parse()
 
 	// Clean and validate the star system name
@@ -142,7 +146,11 @@ func main() {
 		if *bootstrapPeer != "" {
 			config.BootstrapPeer = *bootstrapPeer
 		}
-		config.SeedNodes = FetchSeedNodes()
+
+		// In isolated mode, never fetch seed nodes
+		if !*isolatedMode {
+			config.SeedNodes = FetchSeedNodes()
+		}
 
 		if err := dht.Bootstrap(config); err != nil {
 			log.Printf("Bootstrap warning: %v", err)
@@ -270,7 +278,7 @@ func validateStarName(name string) error {
 		"default",
 		"placeholder",
 	}
-	
+
 	nameLower := strings.ToLower(name)
 	for _, p := range placeholders {
 		if nameLower == strings.ToLower(p) {
@@ -283,7 +291,7 @@ func validateStarName(name string) error {
 		return fmt.Errorf("star system name must be at least 2 characters long")
 	}
 
-	// Check maximum length  
+	// Check maximum length
 	if len(name) > 64 {
 		return fmt.Errorf("star system name must be 64 characters or less")
 	}
