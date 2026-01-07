@@ -1267,7 +1267,7 @@ const indexTemplate = `<!DOCTYPE html>
                 
                 // Animate ring pulse for self
                 if (selfRing) {
-                    ringPulseTime += 0.008; // ~2 second cycle at 60fps
+                    ringPulseTime += 0.0032; // ~5 second cycle at 60fps
                     const cycle = ringPulseTime % 1; // 0 to 1 cycle
                     const scale = 1 + cycle * 2.5; // 1 to 3.5
                     const opacity = 0.6 * (1 - cycle); // 0.6 to 0
