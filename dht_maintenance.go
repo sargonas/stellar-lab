@@ -283,8 +283,8 @@ func (dht *DHT) calculateCredits() {
 		return
 	}
 
-	log.Printf("  Current state: balance=%d, last_calculated=%d, longevity_start=%d",
-		balance.Balance, balance.LastUpdated, balance.LongevityStart)
+	log.Printf("  Current state: balance=%d, pending=%.3f, last_calculated=%d, longevity_start=%d",
+		balance.Balance, balance.PendingCredits, balance.LastUpdated, balance.LongevityStart)
 
 	// Get attestations since last calculation
 	attestations, err := dht.storage.GetAttestationsSince(dht.localSystem.ID, balance.LastUpdated)
@@ -331,13 +331,22 @@ func (dht *DHT) calculateCredits() {
 	calculator := NewCreditCalculator()
 	result := calculator.CalculateEarnedCredits(input)
 
-	log.Printf("  Calculation result: credits=%d, base=%.2f",
+	log.Printf("  Calculation result: earned=%.3f, base=%.3f",
 		result.CreditsEarned, result.BaseCredits)
 
-	if result.CreditsEarned > 0 {
-		// Update balance
-		balance.Balance += result.CreditsEarned
-		balance.TotalEarned += result.CreditsEarned
+	if result.CreditsEarned > 0 || result.BaseCredits > 0 {
+		// Add earned credits to pending balance
+		pending := balance.PendingCredits + result.CreditsEarned
+		
+		// Extract whole credits
+		wholeCredits := int64(pending)
+		
+		// Keep fractional part for next time
+		balance.PendingCredits = pending - float64(wholeCredits)
+		
+		// Update balance with whole credits
+		balance.Balance += wholeCredits
+		balance.TotalEarned += wholeCredits
 		balance.LastUpdated = time.Now().Unix()
 		balance.LongevityStart = result.NewLongevityStart
 
@@ -363,12 +372,18 @@ func (dht *DHT) calculateCredits() {
 			bonusParts = append(bonusParts, fmt.Sprintf("reciprocity:+%.1f%%", result.Bonuses.Reciprocity*100))
 		}
 
-		if len(bonusParts) > 0 {
-			log.Printf("  ✦ Earned %d stellar credits [%s] (total: %d, rank: %s)",
-				result.CreditsEarned, strings.Join(bonusParts, ", "), balance.Balance, rank.Name)
+		if wholeCredits > 0 {
+			if len(bonusParts) > 0 {
+				log.Printf("  ✦ Earned %d stellar credits [%s] (total: %d, rank: %s, pending: %.3f)",
+					wholeCredits, strings.Join(bonusParts, ", "), balance.Balance, rank.Name, balance.PendingCredits)
+			} else {
+				log.Printf("  ✦ Earned %d stellar credits (total: %d, rank: %s, pending: %.3f)",
+					wholeCredits, balance.Balance, rank.Name, balance.PendingCredits)
+			}
 		} else {
-			log.Printf("  ✦ Earned %d stellar credits (total: %d, rank: %s)",
-				result.CreditsEarned, balance.Balance, rank.Name)
+			// No whole credits this cycle, but fractional credits accumulated
+			log.Printf("  Accumulated %.3f credits (pending: %.3f, need %.3f more for next credit)",
+				result.CreditsEarned, balance.PendingCredits, 1.0-balance.PendingCredits)
 		}
 
 		if result.LongevityBroken {

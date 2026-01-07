@@ -169,6 +169,7 @@ func (s *Storage) createTables() error {
 	CREATE TABLE IF NOT EXISTS credit_balance (
 		system_id TEXT PRIMARY KEY,
 		balance INTEGER NOT NULL DEFAULT 0,
+		pending_credits REAL NOT NULL DEFAULT 0,
 		total_earned INTEGER NOT NULL DEFAULT 0,
 		total_sent INTEGER NOT NULL DEFAULT 0,
 		total_received INTEGER NOT NULL DEFAULT 0,
@@ -241,6 +242,9 @@ func (s *Storage) runMigrations() error {
 	// Add received_by to attestations if it doesn't exist
 	s.db.Exec("ALTER TABLE attestations ADD COLUMN received_by TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_attestations_received_by ON attestations(received_by)")
+	
+	// Add pending_credits to credit_balance if it doesn't exist
+	s.db.Exec("ALTER TABLE credit_balance ADD COLUMN pending_credits REAL NOT NULL DEFAULT 0")
 	
 	// Create verified_transfers table if it doesn't exist
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS verified_transfers (
@@ -1125,11 +1129,12 @@ func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 	var balance CreditBalance
 	var updatedAt int64 // unused but needed for scan
 	err := s.db.QueryRow(`
-		SELECT system_id, balance, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at
+		SELECT system_id, balance, pending_credits, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at
 		FROM credit_balance WHERE system_id = ?
 	`, systemID.String()).Scan(
 		&balance.SystemID,
 		&balance.Balance,
+		&balance.PendingCredits,
 		&balance.TotalEarned,
 		&balance.TotalSent,
 		&balance.TotalReceived,
@@ -1142,6 +1147,7 @@ func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 		return &CreditBalance{
 			SystemID:       systemID,
 			Balance:        0,
+			PendingCredits: 0,
 			TotalEarned:    0,
 			LastUpdated:    0,
 			LongevityStart: 0,
@@ -1156,17 +1162,18 @@ func (s *Storage) GetCreditBalance(systemID uuid.UUID) (*CreditBalance, error) {
 // SaveCreditBalance persists a credit balance
 func (s *Storage) SaveCreditBalance(balance *CreditBalance) error {
 	_, err := s.db.Exec(`
-		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO credit_balance (system_id, balance, pending_credits, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(system_id) DO UPDATE SET
 			balance = excluded.balance,
+			pending_credits = excluded.pending_credits,
 			total_earned = excluded.total_earned,
 			total_sent = excluded.total_sent,
 			total_received = excluded.total_received,
 			last_calculated = excluded.last_calculated,
 			longevity_start = excluded.longevity_start,
 			updated_at = excluded.updated_at
-	`, balance.SystemID.String(), balance.Balance, balance.TotalEarned,
+	`, balance.SystemID.String(), balance.Balance, balance.PendingCredits, balance.TotalEarned,
 		balance.TotalSent, balance.TotalReceived, balance.LastUpdated, balance.LongevityStart, time.Now().Unix())
 	return err
 }

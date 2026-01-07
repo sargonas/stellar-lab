@@ -49,6 +49,7 @@ import (
 type CreditBalance struct {
 	SystemID        uuid.UUID `json:"system_id"`
 	Balance         int64     `json:"balance"`           // Current spendable credits
+	PendingCredits  float64   `json:"pending_credits"`   // Fractional credits carried forward
 	TotalEarned     int64     `json:"total_earned"`      // Lifetime earned (for stats)
 	TotalSent       int64     `json:"total_sent"`        // Lifetime sent to others
 	TotalReceived   int64     `json:"total_received"`    // Lifetime received from others
@@ -145,11 +146,11 @@ type CalculationInput struct {
 
 // CalculationResult holds the result with breakdown
 type CalculationResult struct {
-	CreditsEarned    int64         `json:"credits_earned"`
-	BaseCredits      float64       `json:"base_credits"`
-	Bonuses          CreditBonuses `json:"bonuses"`
-	LongevityBroken  bool          `json:"longevity_broken"`  // True if streak was reset
-	NewLongevityStart int64        `json:"new_longevity_start"`
+	CreditsEarned     float64       `json:"credits_earned"`     // Now float64 for fractional credits
+	BaseCredits       float64       `json:"base_credits"`
+	Bonuses           CreditBonuses `json:"bonuses"`
+	LongevityBroken   bool          `json:"longevity_broken"`   // True if streak was reset
+	NewLongevityStart int64         `json:"new_longevity_start"`
 }
 
 // CalculateEarnedCredits computes credits with all bonuses
@@ -282,9 +283,8 @@ func (cc *CreditCalculator) CalculateEarnedCredits(input CalculationInput) Calcu
 		result.Bonuses.Pioneer + 
 		result.Bonuses.Reciprocity
 
-	// Apply bonuses
-	totalCredits := result.BaseCredits * (1.0 + result.Bonuses.Total)
-	result.CreditsEarned = int64(totalCredits)
+	// Apply bonuses - return full float64 value (no truncation here)
+	result.CreditsEarned = result.BaseCredits * (1.0 + result.Bonuses.Total)
 
 	return result
 }
