@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -24,10 +25,13 @@ func main() {
 	bootstrapPeer := flag.String("bootstrap", getEnv("STELLAR_BOOTSTRAP", ""), "Bootstrap peer address (host:port)")
 	flag.Parse()
 
-	// Validate required flags
-	if *name == "" {
-		log.Fatal("Error: -name or STELLAR_NAME is required")
+	// Clean and validate the star system name
+	cleanName := sanitizeStarName(*name)
+	if err := validateStarName(cleanName); err != nil {
+		log.Fatalf("Error: %v", err)
 	}
+
+	// Validate public address
 	if *publicAddr == "" {
 		log.Fatal("Error: -public-address or STELLAR_PUBLIC_ADDRESS is required (e.g., \"myhost.com:7867\")")
 	}
@@ -54,7 +58,7 @@ func main() {
 	system, err := storage.LoadSystem()
 	if err != nil {
 		// Create new system
-		log.Printf("Creating new star system: %s", *name)
+		log.Printf("Creating new star system: %s", cleanName)
 
 		// Generate UUID (deterministic if seed provided)
 		var systemID uuid.UUID
@@ -73,7 +77,7 @@ func main() {
 
 		system = &System{
 			ID:          systemID,
-			Name:        *name,
+			Name:        cleanName,
 			CreatedAt:   time.Now(),
 			LastSeenAt:  time.Now(),
 			Address:     webAddr,
@@ -159,9 +163,6 @@ func main() {
 		}
 	}()
 
-	// Schedule attestation compaction
-	scheduleCompaction(storage)
-
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -231,40 +232,61 @@ func logStarSystem(sys *System) {
 	}
 }
 
-// scheduleCompaction schedules periodic attestation compaction
-func scheduleCompaction(storage *Storage) {
-	// Run at 3 AM daily
-	now := time.Now()
-	next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
-	if next.Before(now) {
-		next = next.Add(24 * time.Hour)
-	}
-
-	duration := next.Sub(now)
-	log.Printf("Next compaction scheduled for %s (in %v)", next.Format(time.RFC3339), duration.Round(time.Second))
-
-	go func() {
-		time.Sleep(duration)
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-
-		for {
-			log.Printf("Running attestation compaction...")
-			if _, err := storage.CompactAttestations(14); err != nil {
-				log.Printf("Compaction error: %v", err)
-			} else {
-				log.Printf("Compaction complete")
-			}
-
-			<-ticker.C
-		}
-	}()
-}
-
 // getEnv returns environment variable value or default if not set
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
+}
+
+// sanitizeStarName cleans up a star name by removing quotes and extra whitespace
+func sanitizeStarName(name string) string {
+	// Trim whitespace
+	name = strings.TrimSpace(name)
+	// Remove surrounding quotes (single or double) that may have been passed through
+	name = strings.Trim(name, "\"'`")
+	// Trim again in case there was whitespace inside quotes
+	name = strings.TrimSpace(name)
+	return name
+}
+
+// validateStarName checks if a star name is valid
+func validateStarName(name string) error {
+	// Check for empty name
+	if name == "" {
+		return fmt.Errorf("STELLAR_NAME is required - please set a unique name for your star system")
+	}
+
+	// Check for placeholder values that users forgot to change
+	placeholders := []string{
+		"CHANGE_ME",
+		"YOUR_STAR_NAME",
+		"YOUR_STAR_NAME_HERE",
+		"CHANGE_ME_TO_YOUR_STAR_NAME",
+		"MyStarSystem",
+		"example",
+		"test",
+		"default",
+		"placeholder",
+	}
+	
+	nameLower := strings.ToLower(name)
+	for _, p := range placeholders {
+		if nameLower == strings.ToLower(p) {
+			return fmt.Errorf("please change STELLAR_NAME from '%s' to a unique name for your star system", name)
+		}
+	}
+
+	// Check minimum length
+	if len(name) < 2 {
+		return fmt.Errorf("star system name must be at least 2 characters long")
+	}
+
+	// Check maximum length  
+	if len(name) > 64 {
+		return fmt.Errorf("star system name must be 64 characters or less")
+	}
+
+	return nil
 }

@@ -9,7 +9,7 @@ services:
     volumes:
       - stellar-data:/data
     environment:
-      - STELLAR_NAME=MyStarSystem
+      - STELLAR_NAME=CHANGE_ME_TO_YOUR_STAR_NAME
       - STELLAR_PUBLIC_ADDRESS=your-domain.com:7867
       # Optional:
       # - STELLAR_DB=/data/stellar-lab.db
