@@ -313,7 +313,8 @@ func (w *WebInterface) handleConnectionsAPI(rw http.ResponseWriter, r *http.Requ
     }
 
     // Also add our direct connections (routing table peers)
-    // These are definitely connected to us
+    // Peers in our routing table have had bidirectional communication with us,
+    // so we add BOTH directions to enable proper reciprocity detection
     selfID := w.dht.GetLocalSystem().ID.String()
     selfName := w.dht.GetLocalSystem().Name
     peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
@@ -327,18 +328,33 @@ func (w *WebInterface) handleConnectionsAPI(rw http.ResponseWriter, r *http.Requ
         existingEdges[key2] = true
     }
     
-    // Add our direct peer connections
+    // Add our direct peer connections (both directions for reciprocity)
     for _, peer := range peers {
         peerID := peer.ID.String()
-        key := selfID + ":" + peerID
-        if !existingEdges[key] {
+        
+        // Add self → peer
+        keyOut := selfID + ":" + peerID
+        if !existingEdges[keyOut] {
             connections = append(connections, TopologyEdge{
                 FromID:   selfID,
                 FromName: selfName,
                 ToID:     peerID,
                 ToName:   peer.Name,
             })
-            existingEdges[key] = true
+            existingEdges[keyOut] = true
+        }
+        
+        // Add peer → self (reciprocal direction)
+        // This is valid because peers in routing table have communicated with us
+        keyIn := peerID + ":" + selfID
+        if !existingEdges[keyIn] {
+            connections = append(connections, TopologyEdge{
+                FromID:   peerID,
+                FromName: peer.Name,
+                ToID:     selfID,
+                ToName:   selfName,
+            })
+            existingEdges[keyIn] = true
         }
     }
 
