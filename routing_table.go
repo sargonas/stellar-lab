@@ -352,7 +352,6 @@ func (rt *RoutingTable) GetClosest(targetID uuid.UUID, count int) []*System {
 			allEntries = append(allEntries, &BucketEntry{
 				System:   cached.System,
 				LastSeen: cached.LearnedAt,
-				Verified: true,
 			})
 		}
 	}
