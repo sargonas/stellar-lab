@@ -341,6 +341,23 @@ func (rt *RoutingTable) GetClosest(targetID uuid.UUID, count int) []*System {
 		bucket.mu.RUnlock()
 	}
 
+	// Also include verified cached systems not in routing table
+	rt.cacheMu.RLock()
+	seenIDs := make(map[uuid.UUID]bool)
+	for _, entry := range allEntries {
+		seenIDs[entry.System.ID] = true
+	}
+	for id, cached := range rt.systemCache {
+		if !seenIDs[id] && cached.Verified {
+			allEntries = append(allEntries, &BucketEntry{
+				System:   cached.System,
+				LastSeen: cached.LearnedAt,
+				Verified: true,
+			})
+		}
+	}
+	rt.cacheMu.RUnlock()
+
 	// Sort by XOR distance to target
 	sortByXORDistance(allEntries, targetID)
 
@@ -497,6 +514,20 @@ func (rt *RoutingTable) GetAllCachedSystems() []*System {
 	result := make([]*System, 0, len(rt.systemCache))
 	for _, cached := range rt.systemCache {
 		result = append(result, cached.System)
+	}
+	return result
+}
+
+// GetVerifiedCachedSystems returns only verified systems from the cache
+func (rt *RoutingTable) GetVerifiedCachedSystems() []*System {
+	rt.cacheMu.RLock()
+	defer rt.cacheMu.RUnlock()
+
+	result := make([]*System, 0)
+	for _, cached := range rt.systemCache {
+		if cached.Verified {
+			result = append(result, cached.System)
+		}
 	}
 	return result
 }

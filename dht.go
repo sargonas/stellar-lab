@@ -310,6 +310,7 @@ func (dht *DHT) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 // handleDiscoveryInfo returns discovery info for bootstrapping
 func (dht *DHT) handleDiscoveryInfo(w http.ResponseWriter, r *http.Request) {
 	systems := []DiscoverySystem{}
+	seenIDs := make(map[uuid.UUID]bool)
 
 	// Add self
 	rtSize := dht.routingTable.GetRoutingTableSize()
@@ -326,6 +327,7 @@ func (dht *DHT) handleDiscoveryInfo(w http.ResponseWriter, r *http.Request) {
 		MaxPeers:     dht.localSystem.GetMaxPeers(),
 		HasCapacity:  selfHasCapacity,
 	})
+	seenIDs[dht.localSystem.ID] = true
 
 	// Add nodes from routing table
 	for _, sys := range dht.routingTable.GetAllRoutingTableNodes() {
@@ -339,6 +341,23 @@ func (dht *DHT) handleDiscoveryInfo(w http.ResponseWriter, r *http.Request) {
 			MaxPeers:    sys.GetMaxPeers(),
 			HasCapacity: true, // Assume yes, they'll reject if not
 		})
+		seenIDs[sys.ID] = true
+	}
+
+	// Also add verified cached systems not already included
+	for _, sys := range dht.routingTable.GetVerifiedCachedSystems() {
+		if !seenIDs[sys.ID] {
+			systems = append(systems, DiscoverySystem{
+				ID:          sys.ID.String(),
+				Name:        sys.Name,
+				X:           sys.X,
+				Y:           sys.Y,
+				Z:           sys.Z,
+				PeerAddress: sys.PeerAddress,
+				MaxPeers:    sys.GetMaxPeers(),
+				HasCapacity: true,
+			})
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -74,6 +74,9 @@ func (dht *DHT) FindNode(targetID uuid.UUID) *LookupResult {
 				continue
 			}
 
+			// Mark responding node as verified (successful communication)
+			dht.routingTable.MarkVerified(resp.nodeID)
+
 			// Mark as queried
 			queried[resp.nodeID] = true
 
