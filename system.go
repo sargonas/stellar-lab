@@ -61,43 +61,43 @@ func generateSingleStar(seed uint64) StarType {
 	case roll < 500: // 0.5% - O type
 		class = "O"
 		desc = "Blue Supergiant"
-		color = "#9bb0ff"
+		color = "#6b8cff"
 		temp = 30000 + int(seed%20000)
 		lum = 30000.0 + float64(seed%20000)
 	case roll < 2500: // 2% - B type
 		class = "B"
 		desc = "Blue Giant"
-		color = "#aabfff"
+		color = "#8eb4f0"
 		temp = 10000 + int(seed%10000)
 		lum = 25.0 + float64(seed%1000)
 	case roll < 7500: // 5% - A type
 		class = "A"
 		desc = "White Star"
-		color = "#cad7ff"
+		color = "#e8e8ff"
 		temp = 7500 + int(seed%2500)
 		lum = 5.0 + float64(seed%20)
 	case roll < 17500: // 10% - F type
 		class = "F"
 		desc = "Yellow-White Star"
-		color = "#f8f7ff"
+		color = "#fffde8"
 		temp = 6000 + int(seed%1500)
 		lum = 1.5 + float64(seed%10)/10.0
 	case roll < 35000: // 17.5% - G type (like our Sun)
 		class = "G"
 		desc = "Yellow Dwarf"
-		color = "#fff4ea"
+		color = "#ffeb3b"
 		temp = 5200 + int(seed%800)
 		lum = 0.6 + float64(seed%10)/10.0
 	case roll < 60000: // 25% - K type
 		class = "K"
 		desc = "Orange Dwarf"
-		color = "#ffd2a1"
+		color = "#ff9800"
 		temp = 3700 + int(seed%1500)
 		lum = 0.08 + float64(seed%50)/100.0
 	default: // 40% - M type
 		class = "M"
 		desc = "Red Dwarf"
-		color = "#ffcc6f"
+		color = "#e85d4c"
 		temp = 2400 + int(seed%1300)
 		lum = 0.001 + float64(seed%80)/1000.0
 	}

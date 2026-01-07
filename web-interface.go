@@ -22,6 +22,7 @@ type WebInterface struct {
 type WebInterfaceData struct {
     System            *System
     Peers             []*System
+    PeerIDs           []string
     PeerCount         int
     MaxPeers          int
     PeerCapacityDesc  string
@@ -40,6 +41,10 @@ type WebInterfaceData struct {
     CreditRankColor   string
     NextRank          string
     CreditsToNextRank int64
+    LongevityWeeks       float64
+    LongevityBonus       float64
+    LongevityBonusPct    float64
+    LongevityProgressPct float64
 }
 
 // NewWebInterface creates a new web interface
@@ -151,10 +156,11 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         capacityDesc = "trinary system"
     }
 
-    // Get credit balance
+    // Get credit balance and longevity
     var creditBalance int64
     var creditRank, creditRankColor, nextRank string
     var creditsToNext int64
+    var longevityWeeks, longevityBonus float64
     
     balance, err := w.storage.GetCreditBalance(sys.ID)
     if err == nil {
@@ -167,11 +173,28 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
             nextRank = next.Name
             creditsToNext = needed
         }
+        // Calculate longevity
+        if balance.LongevityStart > 0 {
+            longevitySeconds := time.Now().Unix() - balance.LongevityStart
+            longevityWeeks = float64(longevitySeconds) / (7 * 24 * 3600)
+            longevityBonus = min(longevityWeeks * 0.01, 0.52)
+        }
+    }
+
+    // Calculate percentages for display
+    longevityBonusPct := longevityBonus * 100
+    longevityProgressPct := min((longevityWeeks / 52) * 100, 100)
+
+    // Build peer ID list for JS
+    peerIDs := make([]string, len(peers))
+    for i, p := range peers {
+        peerIDs[i] = p.ID.String()
     }
 
     return WebInterfaceData{
         System:           sys,
         Peers:            peers,
+        PeerIDs:          peerIDs,
         PeerCount:        rtSize,
         MaxPeers:         sys.GetMaxPeers(),
         PeerCapacityDesc: capacityDesc,
@@ -187,9 +210,13 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         // Credits
         CreditBalance:     creditBalance,
         CreditRank:        creditRank,
-        CreditRankColor:   creditRankColor,
-        NextRank:          nextRank,
-        CreditsToNextRank: creditsToNext,
+        CreditRankColor:      creditRankColor,
+        NextRank:             nextRank,
+        CreditsToNextRank:    creditsToNext,
+        LongevityWeeks:       longevityWeeks,
+        LongevityBonus:       longevityBonus,
+        LongevityBonusPct:    longevityBonusPct,
+        LongevityProgressPct: longevityProgressPct,
     }
 }
 
@@ -214,6 +241,19 @@ func (w *WebInterface) handleKnownSystemsAPI(rw http.ResponseWriter, r *http.Req
 
 func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
     stats := w.dht.GetNetworkStats()
+    
+    // Merge in database stats for AJAX refresh
+    dbStats, err := w.storage.GetDatabaseStats()
+    if err == nil && dbStats != nil {
+        if count, ok := dbStats["attestation_count"].(int); ok {
+            stats["attestation_count"] = count
+        }
+        if sizeBytes, ok := dbStats["database_size_bytes"].(int64); ok {
+            stats["database_size_bytes"] = sizeBytes
+            stats["database_size"] = formatBytes(sizeBytes)
+        }
+    }
+    
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(stats)
 }
@@ -336,7 +376,7 @@ const indexTemplate = `<!DOCTYPE html>
             min-height: 100vh;
             padding: 20px;
         }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1600px; margin: 0 auto; }
         h1 {
             font-size: 2.5em;
             margin-bottom: 10px;
@@ -348,7 +388,7 @@ const indexTemplate = `<!DOCTYPE html>
         .subtitle { color: #888; margin-bottom: 30px; }
         .grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 20px;
             margin-bottom: 20px;
         }
@@ -393,6 +433,18 @@ const indexTemplate = `<!DOCTYPE html>
             height: 30px;
             border-radius: 50%;
             box-shadow: 0 0 20px currentColor;
+        }
+        .star-blackhole {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #000 0%, #000 50%, #1a0a2e 70%, #3d1a5c 85%, transparent 100%);
+            box-shadow: 0 0 15px #8b5cf6, 0 0 30px #6366f1, 0 0 45px rgba(139, 92, 246, 0.3);
+            animation: blackhole-pulse 3s ease-in-out infinite;
+        }
+        @keyframes blackhole-pulse {
+            0%, 100% { box-shadow: 0 0 15px #8b5cf6, 0 0 30px #6366f1, 0 0 45px rgba(139, 92, 246, 0.3); }
+            50% { box-shadow: 0 0 20px #a78bfa, 0 0 40px #8b5cf6, 0 0 60px rgba(139, 92, 246, 0.4); }
         }
         .coords { font-family: monospace; color: #888; font-size: 0.9em; }
         #galaxy-map {
@@ -465,6 +517,53 @@ const indexTemplate = `<!DOCTYPE html>
             border-radius: 4px;
             font-size: 0.9em;
         }
+        .longevity-bar {
+            margin-top: 12px;
+            padding: 12px;
+            background: rgba(167, 139, 250, 0.1);
+            border-radius: 8px;
+        }
+        .longevity-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+        }
+        .longevity-label { color: #888; }
+        .longevity-value { color: #a78bfa; font-weight: 500; }
+        .longevity-track {
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .longevity-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #60a5fa, #a78bfa);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .longevity-note {
+            margin-top: 6px;
+            font-size: 0.75em;
+            color: #666;
+        }
+        .map-tooltip .tooltip-class {
+            color: #a78bfa;
+            font-size: 11px;
+            margin-bottom: 2px;
+        }
+        .map-tooltip .tooltip-distance {
+            color: #4ade80;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+        @media (max-width: 1400px) {
+            .grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 800px) {
+            .grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -480,7 +579,7 @@ const indexTemplate = `<!DOCTYPE html>
                 <h2>System Information</h2>
                 <div class="stat-row">
                     <span class="stat-label">Status</span>
-                    <span class="stat-value {{.NodeHealthClass}}">{{.NodeHealth}}</span>
+                    <span id="stat-health" class="stat-value {{.NodeHealthClass}}">{{.NodeHealth}}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">System ID</span>
@@ -491,7 +590,11 @@ const indexTemplate = `<!DOCTYPE html>
                     <span class="stat-value coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</span>
                 </div>
                 <div class="star-display">
+                    {{if eq .System.Stars.Primary.Class "X"}}
+                    <div class="star-blackhole"></div>
+                    {{else}}
                     <div class="star" style="background: {{.System.Stars.Primary.Color}}; color: {{.System.Stars.Primary.Color}};"></div>
+                    {{end}}
                     {{if .System.Stars.Secondary}}
                     <div class="star" style="background: {{.System.Stars.Secondary.Color}}; color: {{.System.Stars.Secondary.Color}}; width: 24px; height: 24px;"></div>
                     {{end}}
@@ -503,18 +606,18 @@ const indexTemplate = `<!DOCTYPE html>
             </div>
 
             <div class="card">
-                <h2>DHT Statistics</h2>
+                <h2>Stellar Transport</h2>
                 <div class="stat-row">
                     <span class="stat-label">Routing Table</span>
-                    <span class="stat-value">{{.RoutingTableSize}} nodes</span>
+                    <span id="stat-routing" class="stat-value">{{.RoutingTableSize}} nodes</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">System Cache</span>
-                    <span class="stat-value">{{.CacheSize}} systems</span>
+                    <span id="stat-cache" class="stat-value">{{.CacheSize}} systems</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Known Galaxy</span>
-                    <span class="stat-value">{{.TotalSystems}} systems</span>
+                    <span id="stat-galaxy" class="stat-value">{{.TotalSystems}} systems</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Max Peers</span>
@@ -522,11 +625,11 @@ const indexTemplate = `<!DOCTYPE html>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Attestations</span>
-                    <span class="stat-value">{{.AttestationCount}}</span>
+                    <span id="stat-attestations" class="stat-value">{{.AttestationCount}}</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Database</span>
-                    <span class="stat-value">{{.DatabaseSize}}</span>
+                    <span id="stat-dbsize" class="stat-value">{{.DatabaseSize}}</span>
                 </div>
             </div>
 
@@ -534,27 +637,31 @@ const indexTemplate = `<!DOCTYPE html>
                 <h2>Stellar Credits</h2>
                 <div class="stat-row">
                     <span class="stat-label">Balance</span>
-                    <span class="stat-value">{{.CreditBalance}} ✦</span>
+                    <span id="stat-balance" class="stat-value">{{.CreditBalance}} ✦</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Rank</span>
-                    <span class="stat-value" style="color: {{.CreditRankColor}};">{{.CreditRank}}</span>
+                    <span id="stat-rank" class="stat-value" style="color: {{.CreditRankColor}};">{{.CreditRank}}</span>
                 </div>
-                {{if .NextRank}}
-                <div class="stat-row">
+                <div id="stat-nextrank-row" class="stat-row" {{if not .NextRank}}style="display:none;"{{end}}>
                     <span class="stat-label">Next Rank</span>
-                    <span class="stat-value">{{.NextRank}} ({{.CreditsToNextRank}} ✦ needed)</span>
+                    <span id="stat-nextrank" class="stat-value">{{.NextRank}} ({{.CreditsToNextRank}} ✦ needed)</span>
                 </div>
-                {{end}}
-                <div style="margin-top: 15px; padding: 10px; background: rgba(167, 139, 250, 0.1); border-radius: 8px; font-size: 0.85em; color: #888;">
-                    Credits earned: ~1 per hour of verified uptime.<br>
-                    Normalized across all star types.
+                <div class="longevity-bar">
+                    <div class="longevity-header">
+                        <span class="longevity-label">Longevity Bonus</span>
+                        <span id="stat-longbonus" class="longevity-value">+{{printf "%.1f" .LongevityBonusPct}}%</span>
+                    </div>
+                    <div class="longevity-track">
+                        <div id="stat-longbar" class="longevity-fill" style="width: {{printf "%.1f" .LongevityProgressPct}}%;"></div>
+                    </div>
+                    <div id="stat-longweeks" class="longevity-note">{{printf "%.1f" .LongevityWeeks}} / 52 weeks to max (+52%)</div>
                 </div>
             </div>
 
             <div class="card">
-                <h2>Routing Table ({{.RoutingTableSize}} nodes)</h2>
-                <div class="peer-list">
+                <h2 id="routing-title">Routing Table ({{.RoutingTableSize}} nodes)</h2>
+                <div id="peer-list" class="peer-list">
                     {{range .Peers}}
                     <div class="peer-item">
                         <div class="peer-name">{{.Name}}</div>
@@ -568,9 +675,14 @@ const indexTemplate = `<!DOCTYPE html>
             </div>
 
             <div class="card grid-full">
-                <h2>Galaxy Map ({{.TotalSystems}} systems)</h2>
+                <h2 id="galaxy-title">Galaxy Map ({{.TotalSystems}} systems)</h2>
                 <div id="galaxy-map"></div>
             </div>
+        </div>
+
+        <div style="margin-top: 20px; padding: 15px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #666; font-size: 0.9em;">Export network topology data for analysis or debugging</span>
+            <button onclick="exportTopology()" style="background: rgba(96, 165, 250, 0.2); border: 1px solid rgba(96, 165, 250, 0.4); color: #60a5fa; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em;">Export JSON</button>
         </div>
     </div>
 
@@ -707,7 +819,7 @@ const indexTemplate = `<!DOCTYPE html>
 
         const knownSystems = [
             {{range .KnownSystems}}
-            {id: "{{.ID}}", name: "{{.Name}}", x: {{.X}}, y: {{.Y}}, z: {{.Z}}, color: "{{.Stars.Primary.Color}}"},
+            {id: "{{.ID}}", name: "{{.Name}}", x: {{.X}}, y: {{.Y}}, z: {{.Z}}, color: "{{.Stars.Primary.Color}}", starClass: "{{.Stars.Primary.Class}}", starDesc: "{{.Stars.Primary.Description}}"},
             {{end}}
         ];
         const selfSystem = {
@@ -716,12 +828,20 @@ const indexTemplate = `<!DOCTYPE html>
             x: {{.System.X}},
             y: {{.System.Y}},
             z: {{.System.Z}},
-            color: "{{.System.Stars.Primary.Color}}"
+            color: "{{.System.Stars.Primary.Color}}",
+            starClass: "{{.System.Stars.Primary.Class}}",
+            starDesc: "{{.System.Stars.Primary.Description}}"
         };
+        const livePeerIDs = new Set([
+            {{range .PeerIDs}}"{{.}}",{{end}}
+        ]);
 
         let scene, camera, renderer, controls;
         let starMeshes = [];
+        let connectionLines = [];
         let cachedConnections = [];
+        let selfRing = null;
+        let ringPulseTime = 0;
 
         async function fetchConnections() {
             try {
@@ -742,19 +862,68 @@ const indexTemplate = `<!DOCTYPE html>
             } : { r: 1, g: 1, b: 1 };
         }
 
-        function createStarSprite(color, size, isEmissive) {
+        function createStarSprite(color, size, isSelf, isCached, starClass) {
             const canvas = document.createElement('canvas');
             canvas.width = 64;
             canvas.height = 64;
             const ctx = canvas.getContext('2d');
             
+            // Special rendering for black holes (Class X)
+            if (starClass === 'X') {
+                // Outer accretion disk glow
+                const outerGlow = ctx.createRadialGradient(32, 32, 20, 32, 32, 32);
+                outerGlow.addColorStop(0, 'rgba(139, 92, 246, 0)');
+                outerGlow.addColorStop(0.3, 'rgba(139, 92, 246, 0.4)');
+                outerGlow.addColorStop(0.6, 'rgba(99, 102, 241, 0.6)');
+                outerGlow.addColorStop(0.8, 'rgba(167, 139, 250, 0.3)');
+                outerGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                ctx.fillStyle = outerGlow;
+                ctx.fillRect(0, 0, 64, 64);
+                
+                // Inner ring (accretion disk edge)
+                ctx.beginPath();
+                ctx.arc(32, 32, 16, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(167, 139, 250, 0.8)';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                
+                // Dark center
+                const darkCenter = ctx.createRadialGradient(32, 32, 0, 32, 32, 14);
+                darkCenter.addColorStop(0, 'rgba(0, 0, 0, 1)');
+                darkCenter.addColorStop(0.7, 'rgba(10, 5, 20, 1)');
+                darkCenter.addColorStop(1, 'rgba(30, 15, 50, 0.8)');
+                ctx.fillStyle = darkCenter;
+                ctx.beginPath();
+                ctx.arc(32, 32, 14, 0, Math.PI * 2);
+                ctx.fill();
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                const material = new THREE.SpriteMaterial({ 
+                    map: texture, 
+                    transparent: true,
+                    blending: THREE.AdditiveBlending
+                });
+                const sprite = new THREE.Sprite(material);
+                sprite.scale.set(size * 1.5, size * 1.5, 1); // Black holes render larger
+                return sprite;
+            }
+            
             const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-            const rgb = hexToRgb(color);
+            let rgb = hexToRgb(color);
+            
+            // For cached (non-live) systems, desaturate and add reddish tint
+            if (isCached && !isSelf) {
+                const avg = (rgb.r + rgb.g + rgb.b) / 3;
+                rgb.r = avg * 0.6 + 0.4; // Push toward red
+                rgb.g = avg * 0.4;
+                rgb.b = avg * 0.4;
+            }
+            
             const colorStr = 'rgb(' + Math.floor(rgb.r*255) + ',' + Math.floor(rgb.g*255) + ',' + Math.floor(rgb.b*255) + ')';
             
-            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0, isCached && !isSelf ? 'rgba(255,200,200,0.8)' : 'rgba(255,255,255,1)');
             gradient.addColorStop(0.1, colorStr);
-            gradient.addColorStop(0.4, colorStr.replace('rgb', 'rgba').replace(')', ',0.6)'));
+            gradient.addColorStop(0.4, colorStr.replace('rgb', 'rgba').replace(')', ',' + (isCached ? '0.3' : '0.6') + ')'));
             gradient.addColorStop(1, 'rgba(0,0,0,0)');
             
             ctx.fillStyle = gradient;
@@ -764,11 +933,19 @@ const indexTemplate = `<!DOCTYPE html>
             const material = new THREE.SpriteMaterial({ 
                 map: texture, 
                 transparent: true,
-                blending: THREE.AdditiveBlending
+                blending: THREE.AdditiveBlending,
+                opacity: isCached && !isSelf ? 0.6 : 1.0
             });
             const sprite = new THREE.Sprite(material);
             sprite.scale.set(size, size, 1);
             return sprite;
+        }
+
+        function calculateDistance(sys1, sys2) {
+            const dx = sys1.x - sys2.x;
+            const dy = sys1.y - sys2.y;
+            const dz = sys1.z - sys2.z;
+            return Math.sqrt(dx*dx + dy*dy + dz*dz);
         }
 
         function centerOnSelf() {
@@ -783,6 +960,23 @@ const indexTemplate = `<!DOCTYPE html>
                 targetPos.x + distance * 0.7,
                 targetPos.y + distance * 0.5,
                 targetPos.z + distance * 0.7
+            );
+            controls.update();
+        }
+
+        function centerOnGenesis() {
+            if (!controls || !camera) return;
+            
+            // Genesis is always at 0,0,0
+            const targetPos = new THREE.Vector3(0, 0, 0);
+            controls.target.copy(targetPos);
+            
+            // Position camera at a nice viewing angle
+            const distance = 1500;
+            camera.position.set(
+                distance * 0.7,
+                distance * 0.5,
+                distance * 0.7
             );
             controls.update();
         }
@@ -825,8 +1019,20 @@ const indexTemplate = `<!DOCTYPE html>
             // Add controls UI
             const controlsDiv = document.createElement('div');
             controlsDiv.className = 'map-controls';
-            controlsDiv.innerHTML = '<button class="map-btn" onclick="centerOnSelf()">⌂ Center on Home</button>';
+            controlsDiv.innerHTML = '<button class="map-btn" onclick="centerOnSelf()">⌂ Home</button><button class="map-btn" onclick="centerOnGenesis()">✦ Genesis</button>';
             container.appendChild(controlsDiv);
+            
+            // Add legend
+            const legend = document.createElement('div');
+            legend.style.cssText = 'position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 12px;font-size:11px;z-index:100;';
+            legend.innerHTML = 
+                '<div style="margin-bottom:6px;color:#888;font-weight:500;">Legend</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#60a5fa;">●</span> You</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#4ade80;">●</span> Live peers</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#996666;">●</span> Cached</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Reciprocal</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;"><span style="color:#ffaa44;">┄</span> One-way</div>';
+            container.appendChild(legend);
             
             // Add tooltip
             const tooltip = document.createElement('div');
@@ -854,43 +1060,112 @@ const indexTemplate = `<!DOCTYPE html>
             // Add stars
             allSystems.forEach(sys => {
                 const isSelf = sys.id === selfSystem.id;
-                const size = isSelf ? 40 : 25;
-                const star = createStarSprite(sys.color || '#ffffff', size, isSelf);
+                const isLive = livePeerIDs.has(sys.id);
+                const isCached = !isSelf && !isLive;
+                const size = isSelf ? 40 : (isLive ? 28 : 22);
+                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached, sys.starClass);
                 star.position.set(sys.x, sys.y, sys.z);
-                star.userData = { system: sys, isSelf: isSelf };
+                star.userData = { system: sys, isSelf: isSelf, isLive: isLive, isCached: isCached };
                 scene.add(star);
                 starMeshes.push(star);
+                
+                // Add ring pulse effect for self
+                if (isSelf) {
+                    const ringGeometry = new THREE.RingGeometry(18, 22, 32);
+                    const ringMaterial = new THREE.MeshBasicMaterial({ 
+                        color: 0x60a5fa, 
+                        transparent: true, 
+                        opacity: 0.6,
+                        side: THREE.DoubleSide
+                    });
+                    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ring.position.set(sys.x, sys.y, sys.z);
+                    ring.userData = { startScale: 1, maxScale: 3.5 };
+                    scene.add(ring);
+                    selfRing = ring;
+                }
                 
                 // Create HTML label
                 const label = document.createElement('div');
                 label.textContent = sys.name;
                 label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
-                label.style.color = isSelf ? '#60a5fa' : '#888';
-                if (isSelf) label.style.fontWeight = '500';
+                if (isSelf) {
+                    label.style.color = '#60a5fa';
+                    label.style.fontWeight = '500';
+                } else if (isLive) {
+                    label.style.color = '#4ade80';
+                } else {
+                    label.style.color = '#666';
+                }
                 labelsContainer.appendChild(label);
                 labelElements.push({ element: label, position: star.position, isSelf: isSelf });
             });
 
-            // Add connection lines
-            if (cachedConnections && cachedConnections.length > 0) {
-                const lineMaterial = new THREE.LineBasicMaterial({ 
-                    color: 0x64c8ff, 
-                    transparent: true, 
-                    opacity: 0.25
+            // Build reciprocity map
+            const edgeSet = new Set();
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    edgeSet.add(conn.from_id + ':' + conn.to_id);
                 });
-                
+            }
+            
+            function isReciprocal(fromId, toId) {
+                return edgeSet.has(fromId + ':' + toId) && edgeSet.has(toId + ':' + fromId);
+            }
+
+            // Build connection count per system
+            const connectionCounts = {};
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    connectionCounts[conn.from_id] = (connectionCounts[conn.from_id] || 0) + 1;
+                    connectionCounts[conn.to_id] = (connectionCounts[conn.to_id] || 0) + 1;
+                });
+            }
+
+            // Add connection lines
+            const processedEdges = new Set();
+            if (cachedConnections && cachedConnections.length > 0) {
                 cachedConnections.forEach(conn => {
                     const from = systemById[conn.from_id];
                     const to = systemById[conn.to_id];
-                    if (from && to) {
-                        const points = [
-                            new THREE.Vector3(from.x, from.y, from.z),
-                            new THREE.Vector3(to.x, to.y, to.z)
-                        ];
-                        const geometry = new THREE.BufferGeometry().setFromPoints(points);
-                        const line = new THREE.Line(geometry, lineMaterial);
-                        scene.add(line);
+                    if (!from || !to) return;
+                    
+                    // Avoid drawing same edge twice
+                    const edgeKey = [conn.from_id, conn.to_id].sort().join(':');
+                    if (processedEdges.has(edgeKey)) return;
+                    processedEdges.add(edgeKey);
+                    
+                    const reciprocal = isReciprocal(conn.from_id, conn.to_id);
+                    const points = [
+                        new THREE.Vector3(from.x, from.y, from.z),
+                        new THREE.Vector3(to.x, to.y, to.z)
+                    ];
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                    
+                    let line;
+                    if (reciprocal) {
+                        // Solid line for reciprocal connections
+                        const material = new THREE.LineBasicMaterial({ 
+                            color: 0x64c8ff, 
+                            transparent: true, 
+                            opacity: 0.35
+                        });
+                        line = new THREE.Line(geometry, material);
+                    } else {
+                        // Dashed line for one-way connections
+                        const material = new THREE.LineDashedMaterial({ 
+                            color: 0xffaa44, 
+                            transparent: true, 
+                            opacity: 0.3,
+                            dashSize: 30,
+                            gapSize: 20
+                        });
+                        line = new THREE.Line(geometry, material);
+                        line.computeLineDistances();
                     }
+                    line.userData = { fromId: conn.from_id, toId: conn.to_id, reciprocal: reciprocal };
+                    scene.add(line);
+                    connectionLines.push(line);
                 });
             }
 
@@ -915,6 +1190,23 @@ const indexTemplate = `<!DOCTYPE html>
             const raycaster = new THREE.Raycaster();
             raycaster.params.Sprite = { threshold: 20 };
             const mouse = new THREE.Vector2();
+            let hoveredSystemId = null;
+            
+            function highlightConnections(systemId) {
+                connectionLines.forEach(line => {
+                    if (systemId && (line.userData.fromId === systemId || line.userData.toId === systemId)) {
+                        line.material.opacity = line.userData.reciprocal ? 0.8 : 0.6;
+                        if (line.userData.reciprocal) {
+                            line.material.color.setHex(0x60a5fa);
+                        }
+                    } else {
+                        line.material.opacity = line.userData.reciprocal ? 0.35 : 0.3;
+                        if (line.userData.reciprocal) {
+                            line.material.color.setHex(0x64c8ff);
+                        }
+                    }
+                });
+            }
             
             renderer.domElement.addEventListener('mousemove', (event) => {
                 const rect = renderer.domElement.getBoundingClientRect();
@@ -926,17 +1218,41 @@ const indexTemplate = `<!DOCTYPE html>
                 
                 const tooltip = document.getElementById('map-tooltip');
                 if (intersects.length > 0) {
-                    const sys = intersects[0].object.userData.system;
-                    const isSelf = intersects[0].object.userData.isSelf;
-                    tooltip.innerHTML = '<div class="tooltip-name">' + sys.name + (isSelf ? ' (You)' : '') + '</div>' +
-                        '<div class="tooltip-coords">(' + sys.x.toFixed(1) + ', ' + sys.y.toFixed(1) + ', ' + sys.z.toFixed(1) + ')</div>';
+                    const userData = intersects[0].object.userData;
+                    const sys = userData.system;
+                    const isSelf = userData.isSelf;
+                    const isLive = userData.isLive;
+                    const distance = calculateDistance(selfSystem, sys);
+                    const connCount = connectionCounts[sys.id] || 0;
+                    
+                    let statusLabel = '';
+                    if (isSelf) statusLabel = ' <span style="color:#60a5fa">(You)</span>';
+                    else if (isLive) statusLabel = ' <span style="color:#4ade80">(Live)</span>';
+                    else statusLabel = ' <span style="color:#888">(Cached)</span>';
+                    
+                    tooltip.innerHTML = 
+                        '<div class="tooltip-name">' + sys.name + statusLabel + '</div>' +
+                        '<div class="tooltip-class">' + (sys.starDesc || sys.starClass + '-class star') + '</div>' +
+                        '<div class="tooltip-coords">(' + sys.x.toFixed(1) + ', ' + sys.y.toFixed(1) + ', ' + sys.z.toFixed(1) + ')</div>' +
+                        '<div class="tooltip-distance" style="color:#64c8ff;">' + connCount + ' connection' + (connCount !== 1 ? 's' : '') + '</div>' +
+                        (isSelf ? '' : '<div class="tooltip-distance">' + distance.toFixed(1) + ' units away</div>');
                     tooltip.style.display = 'block';
                     tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
                     tooltip.style.top = (event.clientY - rect.top + 15) + 'px';
                     renderer.domElement.style.cursor = 'pointer';
+                    
+                    // Highlight connections
+                    if (hoveredSystemId !== sys.id) {
+                        hoveredSystemId = sys.id;
+                        highlightConnections(sys.id);
+                    }
                 } else {
                     tooltip.style.display = 'none';
                     renderer.domElement.style.cursor = 'grab';
+                    if (hoveredSystemId !== null) {
+                        hoveredSystemId = null;
+                        highlightConnections(null);
+                    }
                 }
             });
 
@@ -944,6 +1260,18 @@ const indexTemplate = `<!DOCTYPE html>
             function animate() {
                 requestAnimationFrame(animate);
                 controls.update();
+                
+                // Animate ring pulse for self
+                if (selfRing) {
+                    ringPulseTime += 0.0032; // ~5 second cycle at 60fps
+                    const cycle = ringPulseTime % 1; // 0 to 1 cycle
+                    const scale = 1 + cycle * 2.5; // 1 to 3.5
+                    const opacity = 0.6 * (1 - cycle); // 0.6 to 0
+                    selfRing.scale.set(scale, scale, 1);
+                    selfRing.material.opacity = opacity;
+                    // Make ring face camera
+                    selfRing.lookAt(camera.position);
+                }
                 
                 // Update label positions
                 const widthHalf = width / 2;
@@ -977,7 +1305,116 @@ const indexTemplate = `<!DOCTYPE html>
         }
 
         document.addEventListener('DOMContentLoaded', initGalaxyMap);
-        setTimeout(function() { location.reload(); }, 30000);
+        
+        // AJAX refresh stats without reloading page
+        async function refreshStats() {
+            try {
+                // Fetch credits
+                const creditsResp = await fetch('/api/credits');
+                const credits = await creditsResp.json();
+                
+                document.getElementById('stat-balance').textContent = credits.balance + ' ✦';
+                document.getElementById('stat-rank').textContent = credits.rank;
+                document.getElementById('stat-rank').style.color = credits.rank_color;
+                
+                const nextRankRow = document.getElementById('stat-nextrank-row');
+                if (credits.credits_to_next > 0) {
+                    nextRankRow.style.display = '';
+                    document.getElementById('stat-nextrank').textContent = credits.next_rank + ' (' + credits.credits_to_next + ' ✦ needed)';
+                } else {
+                    nextRankRow.style.display = 'none';
+                }
+                
+                const longevityWeeks = credits.longevity_weeks || 0;
+                const longevityBonus = (credits.longevity_bonus || 0) * 100;
+                const longevityProgress = Math.min((longevityWeeks / 52) * 100, 100);
+                
+                document.getElementById('stat-longbonus').textContent = '+' + longevityBonus.toFixed(1) + '%';
+                document.getElementById('stat-longbar').style.width = longevityProgress.toFixed(1) + '%';
+                document.getElementById('stat-longweeks').textContent = longevityWeeks.toFixed(1) + ' / 52 weeks to max (+52%)';
+                
+                // Fetch stats
+                const statsResp = await fetch('/api/stats');
+                const stats = await statsResp.json();
+                
+                if (stats.attestation_count !== undefined) {
+                    document.getElementById('stat-attestations').textContent = stats.attestation_count;
+                }
+                if (stats.database_size) {
+                    document.getElementById('stat-dbsize').textContent = stats.database_size;
+                }
+                
+                // Fetch peers for routing table
+                const peersResp = await fetch('/api/peers');
+                const peers = await peersResp.json() || [];
+                
+                const routingSize = peers.length;
+                document.getElementById('stat-routing').textContent = routingSize + ' nodes';
+                document.getElementById('routing-title').textContent = 'Routing Table (' + routingSize + ' nodes)';
+                
+                // Update health based on routing table size
+                const healthEl = document.getElementById('stat-health');
+                if (routingSize >= 2) {
+                    healthEl.textContent = 'Healthy';
+                    healthEl.className = 'stat-value health-healthy';
+                } else if (routingSize === 1) {
+                    healthEl.textContent = 'Low Connectivity';
+                    healthEl.className = 'stat-value health-warning';
+                } else {
+                    healthEl.textContent = 'Isolated';
+                    healthEl.className = 'stat-value health-critical';
+                }
+                
+                // Update peer list
+                const peerListEl = document.getElementById('peer-list');
+                if (peers.length === 0) {
+                    peerListEl.innerHTML = '<p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>';
+                } else {
+                    peerListEl.innerHTML = peers.map(p => 
+                        '<div class="peer-item">' +
+                        '<div class="peer-name">' + p.name + '</div>' +
+                        '<div class="peer-id">' + p.id + '</div>' +
+                        '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
+                        '</div>'
+                    ).join('');
+                }
+                
+                // Fetch known systems for counts
+                const systemsResp = await fetch('/api/known-systems');
+                const systems = await systemsResp.json() || [];
+                
+                document.getElementById('stat-cache').textContent = systems.length + ' systems';
+                const totalSystems = systems.length + 1;
+                document.getElementById('stat-galaxy').textContent = totalSystems + ' systems';
+                document.getElementById('galaxy-title').textContent = 'Galaxy Map (' + totalSystems + ' systems)';
+                
+            } catch (err) {
+                console.error('Failed to refresh stats:', err);
+            }
+        }
+        
+        // Refresh stats every 30 seconds
+        setInterval(refreshStats, 30000);
+
+        async function exportTopology() {
+            const data = {
+                exported_at: new Date().toISOString(),
+                local_system: selfSystem,
+                known_systems: knownSystems,
+                connections: cachedConnections,
+                live_peer_ids: Array.from(livePeerIDs)
+            };
+            
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'stellar-topology-' + new Date().toISOString().split('T')[0] + '.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
     </script>
 </body>
 </html>`
