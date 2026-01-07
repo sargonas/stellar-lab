@@ -672,6 +672,11 @@ const indexTemplate = `<!DOCTYPE html>
                 <div id="galaxy-map"></div>
             </div>
         </div>
+
+        <div style="margin-top: 20px; padding: 15px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #666; font-size: 0.9em;">Export network topology data for analysis or debugging</span>
+            <button onclick="exportTopology()" style="background: rgba(96, 165, 250, 0.2); border: 1px solid rgba(96, 165, 250, 0.4); color: #60a5fa; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em;">Export JSON</button>
+        </div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -828,6 +833,8 @@ const indexTemplate = `<!DOCTYPE html>
         let starMeshes = [];
         let connectionLines = [];
         let cachedConnections = [];
+        let selfRing = null;
+        let ringPulseTime = 0;
 
         async function fetchConnections() {
             try {
@@ -950,6 +957,23 @@ const indexTemplate = `<!DOCTYPE html>
             controls.update();
         }
 
+        function centerOnGenesis() {
+            if (!controls || !camera) return;
+            
+            // Genesis is always at 0,0,0
+            const targetPos = new THREE.Vector3(0, 0, 0);
+            controls.target.copy(targetPos);
+            
+            // Position camera at a nice viewing angle
+            const distance = 1500;
+            camera.position.set(
+                distance * 0.7,
+                distance * 0.5,
+                distance * 0.7
+            );
+            controls.update();
+        }
+
         async function initGalaxyMap() {
             const container = document.getElementById('galaxy-map');
             if (!container) return;
@@ -988,7 +1012,7 @@ const indexTemplate = `<!DOCTYPE html>
             // Add controls UI
             const controlsDiv = document.createElement('div');
             controlsDiv.className = 'map-controls';
-            controlsDiv.innerHTML = '<button class="map-btn" onclick="centerOnSelf()">⌂ Center on Home</button>';
+            controlsDiv.innerHTML = '<button class="map-btn" onclick="centerOnSelf()">⌂ Home</button><button class="map-btn" onclick="centerOnGenesis()">✦ Genesis</button>';
             container.appendChild(controlsDiv);
             
             // Add legend
@@ -1039,6 +1063,22 @@ const indexTemplate = `<!DOCTYPE html>
                 scene.add(star);
                 starMeshes.push(star);
                 
+                // Add ring pulse effect for self
+                if (isSelf) {
+                    const ringGeometry = new THREE.RingGeometry(18, 22, 32);
+                    const ringMaterial = new THREE.MeshBasicMaterial({ 
+                        color: 0x60a5fa, 
+                        transparent: true, 
+                        opacity: 0.6,
+                        side: THREE.DoubleSide
+                    });
+                    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ring.position.set(sys.x, sys.y, sys.z);
+                    ring.userData = { startScale: 1, maxScale: 3.5 };
+                    scene.add(ring);
+                    selfRing = ring;
+                }
+                
                 // Create HTML label
                 const label = document.createElement('div');
                 label.textContent = sys.name;
@@ -1065,6 +1105,15 @@ const indexTemplate = `<!DOCTYPE html>
             
             function isReciprocal(fromId, toId) {
                 return edgeSet.has(fromId + ':' + toId) && edgeSet.has(toId + ':' + fromId);
+            }
+
+            // Build connection count per system
+            const connectionCounts = {};
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    connectionCounts[conn.from_id] = (connectionCounts[conn.from_id] || 0) + 1;
+                    connectionCounts[conn.to_id] = (connectionCounts[conn.to_id] || 0) + 1;
+                });
             }
 
             // Add connection lines
@@ -1168,6 +1217,7 @@ const indexTemplate = `<!DOCTYPE html>
                     const isSelf = userData.isSelf;
                     const isLive = userData.isLive;
                     const distance = calculateDistance(selfSystem, sys);
+                    const connCount = connectionCounts[sys.id] || 0;
                     
                     let statusLabel = '';
                     if (isSelf) statusLabel = ' <span style="color:#60a5fa">(You)</span>';
@@ -1178,6 +1228,7 @@ const indexTemplate = `<!DOCTYPE html>
                         '<div class="tooltip-name">' + sys.name + statusLabel + '</div>' +
                         '<div class="tooltip-class">' + (sys.starDesc || sys.starClass + '-class star') + '</div>' +
                         '<div class="tooltip-coords">(' + sys.x.toFixed(1) + ', ' + sys.y.toFixed(1) + ', ' + sys.z.toFixed(1) + ')</div>' +
+                        '<div class="tooltip-distance" style="color:#64c8ff;">' + connCount + ' connection' + (connCount !== 1 ? 's' : '') + '</div>' +
                         (isSelf ? '' : '<div class="tooltip-distance">' + distance.toFixed(1) + ' units away</div>');
                     tooltip.style.display = 'block';
                     tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
@@ -1203,6 +1254,18 @@ const indexTemplate = `<!DOCTYPE html>
             function animate() {
                 requestAnimationFrame(animate);
                 controls.update();
+                
+                // Animate ring pulse for self
+                if (selfRing) {
+                    ringPulseTime += 0.02;
+                    const cycle = ringPulseTime % 1; // 0 to 1 cycle
+                    const scale = 1 + cycle * 2.5; // 1 to 3.5
+                    const opacity = 0.6 * (1 - cycle); // 0.6 to 0
+                    selfRing.scale.set(scale, scale, 1);
+                    selfRing.material.opacity = opacity;
+                    // Make ring face camera
+                    selfRing.lookAt(camera.position);
+                }
                 
                 // Update label positions
                 const widthHalf = width / 2;
@@ -1237,6 +1300,26 @@ const indexTemplate = `<!DOCTYPE html>
 
         document.addEventListener('DOMContentLoaded', initGalaxyMap);
         setTimeout(function() { location.reload(); }, 30000);
+
+        async function exportTopology() {
+            const data = {
+                exported_at: new Date().toISOString(),
+                local_system: selfSystem,
+                known_systems: knownSystems,
+                connections: cachedConnections,
+                live_peer_ids: Array.from(livePeerIDs)
+            };
+            
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'stellar-topology-' + new Date().toISOString().split('T')[0] + '.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
     </script>
 </body>
 </html>`
