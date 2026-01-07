@@ -107,6 +107,7 @@ func (s *Storage) createTables() error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		from_system_id TEXT NOT NULL,
 		to_system_id TEXT NOT NULL,
+		received_by TEXT NOT NULL DEFAULT '',
 		timestamp INTEGER NOT NULL,
 		message_type TEXT NOT NULL,
 		signature TEXT NOT NULL,
@@ -161,6 +162,7 @@ func (s *Storage) createTables() error {
 	CREATE INDEX IF NOT EXISTS idx_system_star_count ON system(star_count);
 	CREATE INDEX IF NOT EXISTS idx_attestations_from ON attestations(from_system_id);
 	CREATE INDEX IF NOT EXISTS idx_attestations_to ON attestations(to_system_id);
+	CREATE INDEX IF NOT EXISTS idx_attestations_received_by ON attestations(received_by);
 	CREATE INDEX IF NOT EXISTS idx_attestations_timestamp ON attestations(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_attestations_verified ON attestations(verified);
 
@@ -236,6 +238,10 @@ func (s *Storage) runMigrations() error {
 	
 	// Add proof_hash to credit_transfers if it doesn't exist
 	s.db.Exec("ALTER TABLE credit_transfers ADD COLUMN proof_hash TEXT")
+	
+	// Add received_by to attestations if it doesn't exist
+	s.db.Exec("ALTER TABLE attestations ADD COLUMN received_by TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_attestations_received_by ON attestations(received_by)")
 	
 	// Create verified_transfers table if it doesn't exist
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS verified_transfers (
@@ -506,7 +512,8 @@ func (s *Storage) GetStats() (map[string]interface{}, error) {
 }
 
 // SaveAttestation stores a cryptographically signed attestation
-func (s *Storage) SaveAttestation(attestation *Attestation) error {
+// receivedBy is the local system ID that received this attestation (for credit tracking)
+func (s *Storage) SaveAttestation(attestation *Attestation, receivedBy uuid.UUID) error {
 	verified := 0
 	if attestation.Verify() {
 		verified = 1
@@ -514,11 +521,11 @@ func (s *Storage) SaveAttestation(attestation *Attestation) error {
 
 	_, err := s.db.Exec(`
 		INSERT INTO attestations (
-			from_system_id, to_system_id, timestamp, message_type,
+			from_system_id, to_system_id, received_by, timestamp, message_type,
 			signature, public_key, verified, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, attestation.FromSystemID.String(), attestation.ToSystemID.String(),
-		attestation.Timestamp, attestation.MessageType,
+		receivedBy.String(), attestation.Timestamp, attestation.MessageType,
 		attestation.Signature, attestation.PublicKey, verified, time.Now().Unix())
 
 	return err
@@ -1181,13 +1188,14 @@ func (s *Storage) AddCredits(systemID uuid.UUID, amount int64) error {
 }
 
 // GetAttestationsSince retrieves attestations since a given timestamp
+// Returns attestations where this system was the receiver (for credit calculation)
 func (s *Storage) GetAttestationsSince(systemID uuid.UUID, since int64) ([]*Attestation, error) {
 	rows, err := s.db.Query(`
 		SELECT from_system_id, to_system_id, timestamp, message_type, signature, public_key
 		FROM attestations
-		WHERE (from_system_id = ? OR to_system_id = ?) AND timestamp > ?
+		WHERE received_by = ? AND timestamp > ?
 		ORDER BY timestamp ASC
-	`, systemID.String(), systemID.String(), since)
+	`, systemID.String(), since)
 	if err != nil {
 		return nil, err
 	}

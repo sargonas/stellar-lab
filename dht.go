@@ -186,8 +186,10 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store attestation
-	if err := dht.storage.SaveAttestation(msg.Attestation); err != nil {
+	// Store attestation with our local ID as the receiver
+	// Note: We pass our ID separately to preserve the original signed attestation
+	// The attestation's ToSystemID (uuid.Nil) stays unchanged so signature remains valid
+	if err := dht.storage.SaveAttestation(msg.Attestation, dht.localSystem.ID); err != nil {
 		log.Printf("Failed to save attestation: %v", err)
 	}
 
