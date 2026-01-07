@@ -42,14 +42,15 @@ const (
 )
 
 // NewPingRequest creates a new ping request message
-func NewPingRequest(fromSystem *System, requestID string) (*DHTMessage, error) {
+// toSystemID should be the recipient's UUID if known, or uuid.Nil for first contact
+func NewPingRequest(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
 	if fromSystem.Keys == nil {
 		return nil, ErrNoKeys
 	}
 
 	attestation := SignAttestation(
 		fromSystem.ID,
-		uuid.Nil, // Broadcast
+		toSystemID,
 		"dht_ping",
 		fromSystem.Keys.PrivateKey,
 		fromSystem.Keys.PublicKey,
@@ -67,14 +68,15 @@ func NewPingRequest(fromSystem *System, requestID string) (*DHTMessage, error) {
 }
 
 // NewPingResponse creates a ping response message
-func NewPingResponse(fromSystem *System, requestID string) (*DHTMessage, error) {
+// toSystemID should be the original requester's UUID
+func NewPingResponse(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
 	if fromSystem.Keys == nil {
 		return nil, ErrNoKeys
 	}
 
 	attestation := SignAttestation(
 		fromSystem.ID,
-		uuid.Nil, // Broadcast
+		toSystemID,
 		"dht_ping_response",
 		fromSystem.Keys.PrivateKey,
 		fromSystem.Keys.PublicKey,
@@ -92,14 +94,15 @@ func NewPingResponse(fromSystem *System, requestID string) (*DHTMessage, error) 
 }
 
 // NewFindNodeRequest creates a new find_node request message
-func NewFindNodeRequest(fromSystem *System, targetID uuid.UUID, requestID string) (*DHTMessage, error) {
+// toSystemID should be the recipient's UUID if known, or uuid.Nil for first contact
+func NewFindNodeRequest(fromSystem *System, toSystemID uuid.UUID, targetID uuid.UUID, requestID string) (*DHTMessage, error) {
 	if fromSystem.Keys == nil {
 		return nil, ErrNoKeys
 	}
 
 	attestation := SignAttestation(
 		fromSystem.ID,
-		uuid.Nil, // Broadcast
+		toSystemID,
 		"dht_find_node",
 		fromSystem.Keys.PrivateKey,
 		fromSystem.Keys.PublicKey,
@@ -118,14 +121,15 @@ func NewFindNodeRequest(fromSystem *System, targetID uuid.UUID, requestID string
 }
 
 // NewFindNodeResponse creates a find_node response with closest nodes
-func NewFindNodeResponse(fromSystem *System, closestNodes []*System, requestID string) (*DHTMessage, error) {
+// toSystemID should be the original requester's UUID
+func NewFindNodeResponse(fromSystem *System, toSystemID uuid.UUID, closestNodes []*System, requestID string) (*DHTMessage, error) {
 	if fromSystem.Keys == nil {
 		return nil, ErrNoKeys
 	}
 
 	attestation := SignAttestation(
 		fromSystem.ID,
-		uuid.Nil, // Broadcast
+		toSystemID,
 		"dht_find_node_response",
 		fromSystem.Keys.PrivateKey,
 		fromSystem.Keys.PublicKey,
@@ -144,14 +148,15 @@ func NewFindNodeResponse(fromSystem *System, closestNodes []*System, requestID s
 }
 
 // NewAnnounceRequest creates an announce request (node advertising itself)
-func NewAnnounceRequest(fromSystem *System, requestID string) (*DHTMessage, error) {
+// toSystemID should be the recipient's UUID if known, or uuid.Nil for first contact
+func NewAnnounceRequest(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
 	if fromSystem.Keys == nil {
 		return nil, ErrNoKeys
 	}
 
 	attestation := SignAttestation(
 		fromSystem.ID,
-		uuid.Nil, // Broadcast
+		toSystemID,
 		"dht_announce",
 		fromSystem.Keys.PrivateKey,
 		fromSystem.Keys.PublicKey,
@@ -169,14 +174,15 @@ func NewAnnounceRequest(fromSystem *System, requestID string) (*DHTMessage, erro
 }
 
 // NewAnnounceResponse creates an announce response
-func NewAnnounceResponse(fromSystem *System, requestID string) (*DHTMessage, error) {
+// toSystemID should be the original requester's UUID
+func NewAnnounceResponse(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
 	if fromSystem.Keys == nil {
 		return nil, ErrNoKeys
 	}
 
 	attestation := SignAttestation(
 		fromSystem.ID,
-		uuid.Nil, // Broadcast
+		toSystemID,
 		"dht_announce_response",
 		fromSystem.Keys.PrivateKey,
 		fromSystem.Keys.PublicKey,
@@ -238,6 +244,12 @@ func (msg *DHTMessage) Validate() error {
 	}
 
 	return nil
+}
+
+// HasTargetedAttestation returns true if the attestation includes a specific recipient
+// (ToSystemID is not uuid.Nil). This indicates the sender is using protocol v1.6.0+
+func (msg *DHTMessage) HasTargetedAttestation() bool {
+	return msg.Attestation != nil && msg.Attestation.ToSystemID != uuid.Nil
 }
 
 // Error implements the error interface for DHTError

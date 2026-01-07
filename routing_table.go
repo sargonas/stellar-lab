@@ -505,6 +505,37 @@ func (rt *RoutingTable) GetCachedSystem(id uuid.UUID) *System {
 	return nil
 }
 
+// GetSystemIDByAddress looks up a system's UUID by its peer address
+// Returns uuid.Nil if the address is not known
+func (rt *RoutingTable) GetSystemIDByAddress(address string) uuid.UUID {
+	// First check routing table
+	rt.mu.RLock()
+	for _, bucket := range rt.buckets {
+		bucket.mu.RLock()
+		for _, entry := range bucket.entries {
+			if entry.System.PeerAddress == address {
+				id := entry.System.ID
+				bucket.mu.RUnlock()
+				rt.mu.RUnlock()
+				return id
+			}
+		}
+		bucket.mu.RUnlock()
+	}
+	rt.mu.RUnlock()
+
+	// Then check cache
+	rt.cacheMu.RLock()
+	defer rt.cacheMu.RUnlock()
+	for _, cached := range rt.systemCache {
+		if cached.System.PeerAddress == address {
+			return cached.System.ID
+		}
+	}
+
+	return uuid.Nil
+}
+
 // GetAllCachedSystems returns all systems in the cache
 func (rt *RoutingTable) GetAllCachedSystems() []*System {
 	rt.cacheMu.RLock()
