@@ -15,25 +15,6 @@ type Storage struct {
 	db *sql.DB
 }
 
-// AttestationSummary holds aggregated attestation data for a time period
-type AttestationSummary struct {
-    PeerSystemID    string
-    Direction       string // "inbound" or "outbound"
-    PeriodStart     int64
-    PeriodEnd       int64
-    PingCount       int
-    FindNodeCount   int
-    AnnounceCount   int
-    OtherCount      int
-    SampleSignature string
-    SamplePublicKey string
-}
-
-// TotalCount returns the total attestations in this summary
-func (s *AttestationSummary) TotalCount() int {
-    return s.PingCount + s.FindNodeCount + s.AnnounceCount + s.OtherCount
-}
-
 // NewStorage initializes SQLite database and creates tables
 func NewStorage(dbPath string) (*Storage, error) {
 	db, err := sql.Open("sqlite3", dbPath)
@@ -94,15 +75,6 @@ func (s *Storage) createTables() error {
 		private_key TEXT NOT NULL
 	);
 
-	CREATE TABLE IF NOT EXISTS peers (
-		system_id TEXT PRIMARY KEY,
-		address TEXT NOT NULL,
-		last_seen_at INTEGER NOT NULL,
-		total_messages INTEGER NOT NULL DEFAULT 0,
-		public_key TEXT,
-		FOREIGN KEY (system_id) REFERENCES system(id)
-	);
-
 	CREATE TABLE IF NOT EXISTS attestations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		from_system_id TEXT NOT NULL,
@@ -130,22 +102,6 @@ func (s *Storage) createTables() error {
 	updated_at INTEGER NOT NULL
 	);
 
-	CREATE TABLE IF NOT EXISTS attestation_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    peer_system_id TEXT NOT NULL,
-    direction TEXT NOT NULL,
-    period_start INTEGER NOT NULL,
-    period_end INTEGER NOT NULL,
-    ping_count INTEGER DEFAULT 0,
-    find_node_count INTEGER DEFAULT 0,
-    announce_count INTEGER DEFAULT 0,
-    other_count INTEGER DEFAULT 0,
-    sample_signature TEXT NOT NULL,
-    sample_public_key TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    UNIQUE(peer_system_id, direction, period_start)
-	);
-
 	CREATE TABLE IF NOT EXISTS peer_connections (
 		system_id TEXT NOT NULL,
 		peer_id TEXT NOT NULL,
@@ -154,9 +110,6 @@ func (s *Storage) createTables() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_peer_connections_updated ON peer_connections(updated_at);
-	CREATE INDEX IF NOT EXISTS idx_summaries_peer ON attestation_summaries(peer_system_id);
-	CREATE INDEX IF NOT EXISTS idx_summaries_period ON attestation_summaries(period_start);
-	CREATE INDEX IF NOT EXISTS idx_peers_last_seen ON peers(last_seen_at);
 	CREATE INDEX IF NOT EXISTS idx_system_coords ON system(x, y, z);
 	CREATE INDEX IF NOT EXISTS idx_system_primary_class ON system(primary_class);
 	CREATE INDEX IF NOT EXISTS idx_system_star_count ON system(star_count);
@@ -443,75 +396,9 @@ func (s *Storage) LoadSystem() (*System, error) {
 	return &sys, nil
 }
 
-// SavePeer adds or updates a peer
-func (s *Storage) SavePeer(peer *Peer) error {
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO peers (system_id, address, last_seen_at)
-		VALUES (?, ?, ?)
-	`, peer.SystemID.String(), peer.Address, peer.LastSeenAt.Unix())
-	return err
-}
-
-// GetPeers retrieves all known peers
-func (s *Storage) GetPeers() ([]*Peer, error) {
-	rows, err := s.db.Query(`
-		SELECT system_id, address, last_seen_at
-		FROM peers
-		ORDER BY last_seen_at DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var peers []*Peer
-	for rows.Next() {
-		var peer Peer
-		var idStr string
-		var lastSeenAt int64
-
-		if err := rows.Scan(&idStr, &peer.Address, &lastSeenAt); err != nil {
-			continue
-		}
-
-		peer.SystemID = uuid.MustParse(idStr)
-		peer.LastSeenAt = time.Unix(lastSeenAt, 0)
-		peers = append(peers, &peer)
-	}
-
-	return peers, nil
-}
-
-// PruneDeadPeers removes peers not seen within the threshold
-func (s *Storage) PruneDeadPeers(threshold time.Duration) error {
-	cutoff := time.Now().Add(-threshold).Unix()
-	_, err := s.db.Exec(`DELETE FROM peers WHERE last_seen_at < ?`, cutoff)
-	return err
-}
-
-// GetPeerCount returns the number of known peers
-func (s *Storage) GetPeerCount() (int, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM peers`).Scan(&count)
-	return count, err
-}
-
 // Close closes the database connection
 func (s *Storage) Close() error {
 	return s.db.Close()
-}
-
-// GetStats returns basic statistics about the stored data
-func (s *Storage) GetStats() (map[string]interface{}, error) {
-	stats := make(map[string]interface{})
-
-	var peerCount int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM peers`).Scan(&peerCount); err != nil {
-		return nil, err
-	}
-	stats["peer_count"] = peerCount
-
-	return stats, nil
 }
 
 // SaveAttestation stores a cryptographically signed attestation
@@ -607,6 +494,14 @@ func (s *Storage) SavePeerSystem(sys *System) error {
 	return err
 }
 
+// TouchPeerSystem updates only the timestamp for a peer system
+// Used when we verify a system is alive without changing its info
+func (s *Storage) TouchPeerSystem(systemID uuid.UUID) error {
+	_, err := s.db.Exec(`UPDATE peer_systems SET updated_at = ? WHERE id = ?`,
+		time.Now().Unix(), systemID.String())
+	return err
+}
+
 // GetPeerSystem retrieves cached system info for a peer
 func (s *Storage) GetPeerSystem(systemID uuid.UUID) (*System, error) {
 	var sys System
@@ -636,243 +531,6 @@ func (s *Storage) GetPeerSystem(systemID uuid.UUID) (*System, error) {
 	return &sys, nil
 }
 
-// CompactionStats holds results of a compaction run
-type CompactionStats struct {
-    AttestationsProcessed int
-    SummariesCreated      int
-    AttestationsDeleted   int
-    SpaceReclaimed        int64
-}
-
-// CompactAttestations aggregates old attestations into summaries
-// keepDays specifies how many days of full attestations to retain
-func (s *Storage) CompactAttestations(keepDays int) (*CompactionStats, error) {
-    stats := &CompactionStats{}
-
-    // Calculate cutoff timestamp
-    cutoff := time.Now().AddDate(0, 0, -keepDays).Unix()
-
-    // Get database size before compaction
-    var sizeBefore int64
-    err := s.db.QueryRow("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()").Scan(&sizeBefore)
-    if err != nil {
-        sizeBefore = 0 // Non-critical, continue anyway
-    }
-
-    // Start transaction
-    tx, err := s.db.Begin()
-    if err != nil {
-        return nil, fmt.Errorf("failed to start transaction: %w", err)
-    }
-    defer tx.Rollback()
-
-    // Step 1: Find attestations to compact (older than cutoff)
-    // Group by peer, direction (from/to us), and week
-    rows, err := tx.Query(`
-        SELECT
-            CASE
-                WHEN from_system_id = (SELECT id FROM system LIMIT 1) THEN to_system_id
-                ELSE from_system_id
-            END as peer_id,
-            CASE
-                WHEN from_system_id = (SELECT id FROM system LIMIT 1) THEN 'outbound'
-                ELSE 'inbound'
-            END as direction,
-            (timestamp / 604800) * 604800 as week_start,
-            message_type,
-            COUNT(*) as count,
-            MIN(timestamp) as period_start,
-            MAX(timestamp) as period_end,
-            MAX(signature) as sample_sig,
-            MAX(public_key) as sample_key
-        FROM attestations
-        WHERE timestamp < ?
-        GROUP BY peer_id, direction, week_start, message_type
-    `, cutoff)
-    if err != nil {
-        return nil, fmt.Errorf("failed to query attestations: %w", err)
-    }
-    defer rows.Close()
-
-    // Collect summaries to insert
-    type summaryKey struct {
-        peerID    string
-        direction string
-        weekStart int64
-    }
-    type summaryData struct {
-        periodStart   int64
-        periodEnd     int64
-        pingCount     int
-        findNodeCount int
-        announceCount int
-        otherCount    int
-        sampleSig     string
-        sampleKey     string
-    }
-    summaries := make(map[summaryKey]*summaryData)
-
-    for rows.Next() {
-        var peerID, direction, msgType, sampleSig, sampleKey string
-        var weekStart, periodStart, periodEnd int64
-        var count int
-
-        err := rows.Scan(&peerID, &direction, &weekStart, &msgType, &count, &periodStart, &periodEnd, &sampleSig, &sampleKey)
-        if err != nil {
-            return nil, fmt.Errorf("failed to scan row: %w", err)
-        }
-
-        stats.AttestationsProcessed += count
-
-        key := summaryKey{peerID, direction, weekStart}
-        if summaries[key] == nil {
-            summaries[key] = &summaryData{
-                periodStart: periodStart,
-                periodEnd:   periodEnd,
-                sampleSig:   sampleSig,
-                sampleKey:   sampleKey,
-            }
-        }
-
-        // Update period bounds
-        if periodStart < summaries[key].periodStart {
-            summaries[key].periodStart = periodStart
-        }
-        if periodEnd > summaries[key].periodEnd {
-            summaries[key].periodEnd = periodEnd
-        }
-
-        // Count by type
-        switch msgType {
-        case "ping":
-            summaries[key].pingCount += count
-        case "find_node":
-            summaries[key].findNodeCount += count
-        case "announce":
-            summaries[key].announceCount += count
-        default:
-            summaries[key].otherCount += count
-        }
-    }
-    rows.Close()
-
-    // Step 2: Insert summaries
-    insertStmt, err := tx.Prepare(`
-        INSERT OR REPLACE INTO attestation_summaries (
-            peer_system_id, direction, period_start, period_end,
-            ping_count, find_node_count, announce_count, other_count,
-            sample_signature, sample_public_key, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    if err != nil {
-        return nil, fmt.Errorf("failed to prepare insert: %w", err)
-    }
-    defer insertStmt.Close()
-
-    for key, data := range summaries {
-        _, err := insertStmt.Exec(
-            key.peerID, key.direction, key.weekStart, data.periodEnd,
-            data.pingCount, data.findNodeCount, data.announceCount, data.otherCount,
-            data.sampleSig, data.sampleKey, time.Now().Unix(),
-        )
-        if err != nil {
-            return nil, fmt.Errorf("failed to insert summary: %w", err)
-        }
-        stats.SummariesCreated++
-    }
-
-    // Step 3: Previously deleted old attestations here, but we now keep them
-    // permanently for credit transfer proofs. Summaries are still created for
-    // fast UI queries, but raw attestations are the source of truth for validation.
-    //
-    // Storage impact: ~200 bytes/attestation * ~100/day = ~7MB/year per active node
-    // This is acceptable for the security benefit of verifiable credit transfers.
-
-    // Commit transaction
-    if err := tx.Commit(); err != nil {
-        return nil, fmt.Errorf("failed to commit: %w", err)
-    }
-
-    // Step 4: VACUUM to reclaim space (must be outside transaction)
-    _, err = s.db.Exec("VACUUM")
-    if err != nil {
-        // Non-fatal, just log it
-        log.Printf("Warning: VACUUM failed: %v", err)
-    }
-
-    // Calculate space reclaimed
-    var sizeAfter int64
-    err = s.db.QueryRow("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()").Scan(&sizeAfter)
-    if err == nil && sizeBefore > 0 {
-        stats.SpaceReclaimed = sizeBefore - sizeAfter
-    }
-
-    return stats, nil
-}
-
-// GetAttestationSummaries retrieves aggregated historical attestation data for a peer
-func (s *Storage) GetAttestationSummaries(systemID uuid.UUID) ([]AttestationSummary, error) {
-    rows, err := s.db.Query(`
-        SELECT peer_system_id, direction, period_start, period_end,
-               ping_count, find_node_count, announce_count, other_count,
-               sample_signature, sample_public_key
-        FROM attestation_summaries
-        WHERE peer_system_id = ?
-        ORDER BY period_start DESC
-    `, systemID.String())
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-
-    var summaries []AttestationSummary
-    for rows.Next() {
-        var s AttestationSummary
-        err := rows.Scan(
-            &s.PeerSystemID, &s.Direction, &s.PeriodStart, &s.PeriodEnd,
-            &s.PingCount, &s.FindNodeCount, &s.AnnounceCount, &s.OtherCount,
-            &s.SampleSignature, &s.SamplePublicKey,
-        )
-        if err != nil {
-            return nil, err
-        }
-        summaries = append(summaries, s)
-    }
-
-    return summaries, nil
-}
-
-// GetAllAttestationSummaries retrieves all historical summaries for reputation calculation
-func (s *Storage) GetAllAttestationSummaries() ([]AttestationSummary, error) {
-    rows, err := s.db.Query(`
-        SELECT peer_system_id, direction, period_start, period_end,
-               ping_count, find_node_count, announce_count, other_count,
-               sample_signature, sample_public_key
-        FROM attestation_summaries
-        ORDER BY period_start DESC
-    `)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-
-    var summaries []AttestationSummary
-    for rows.Next() {
-        var s AttestationSummary
-        err := rows.Scan(
-            &s.PeerSystemID, &s.Direction, &s.PeriodStart, &s.PeriodEnd,
-            &s.PingCount, &s.FindNodeCount, &s.AnnounceCount, &s.OtherCount,
-            &s.SampleSignature, &s.SamplePublicKey,
-        )
-        if err != nil {
-            return nil, err
-        }
-        summaries = append(summaries, s)
-    }
-
-    return summaries, nil
-}
-
 // GetDatabaseStats returns current database statistics
 func (s *Storage) GetDatabaseStats() (map[string]interface{}, error) {
     stats := make(map[string]interface{})
@@ -882,15 +540,10 @@ func (s *Storage) GetDatabaseStats() (map[string]interface{}, error) {
     s.db.QueryRow("SELECT COUNT(*) FROM attestations").Scan(&attestationCount)
     stats["attestation_count"] = attestationCount
 
-    // Count summaries
-    var summaryCount int
-    s.db.QueryRow("SELECT COUNT(*) FROM attestation_summaries").Scan(&summaryCount)
-    stats["summary_count"] = summaryCount
-
-    // Count peers
-    var peerCount int
-    s.db.QueryRow("SELECT COUNT(*) FROM peers").Scan(&peerCount)
-    stats["peer_count"] = peerCount
+    // Count known systems
+    var systemCount int
+    s.db.QueryRow("SELECT COUNT(*) FROM peer_systems").Scan(&systemCount)
+    stats["known_systems"] = systemCount
 
     // Database size
     var pageCount, pageSize int64
@@ -1040,10 +693,23 @@ func (s *Storage) GetAllConnections(maxAge time.Duration) ([]TopologyEdge, error
 }
 
 // PrunePeerConnections removes stale connection data
-func (s *Storage) PrunePeerConnections(maxAge time.Duration) error {
+func (s *Storage) PrunePeerConnections(maxAge time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-maxAge).Unix()
-	_, err := s.db.Exec(`DELETE FROM peer_connections WHERE updated_at < ?`, cutoff)
-	return err
+	result, err := s.db.Exec(`DELETE FROM peer_connections WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// PrunePeerSystems removes stale peer system data
+func (s *Storage) PrunePeerSystems(maxAge time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-maxAge).Unix()
+	result, err := s.db.Exec(`DELETE FROM peer_systems WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // TopologyEdge represents a connection between two systems

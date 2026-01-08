@@ -183,11 +183,28 @@ func (dht *DHT) cacheMaintenanceLoop() {
 	}
 }
 
-// pruneCache removes stale entries from the system cache
+// pruneCache removes stale entries from the system cache and storage
 func (dht *DHT) pruneCache() {
+	// Prune in-memory cache
 	pruned := dht.routingTable.PruneCache(CacheMaxAge)
 	if pruned > 0 {
 		log.Printf("Pruned %d stale entries from system cache", pruned)
+	}
+
+	// Prune peer_systems table
+	prunedSystems, err := dht.storage.PrunePeerSystems(CacheMaxAge)
+	if err != nil {
+		log.Printf("Error pruning peer systems: %v", err)
+	} else if prunedSystems > 0 {
+		log.Printf("Pruned %d stale entries from peer_systems table", prunedSystems)
+	}
+
+	// Prune peer_connections table
+	prunedConns, err := dht.storage.PrunePeerConnections(CacheMaxAge)
+	if err != nil {
+		log.Printf("Error pruning peer connections: %v", err)
+	} else if prunedConns > 0 {
+		log.Printf("Pruned %d stale entries from peer_connections table", prunedConns)
 	}
 }
 

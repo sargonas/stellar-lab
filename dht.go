@@ -34,8 +34,8 @@ const (
 	// CachePruneInterval is how often to prune stale cache entries
 	CachePruneInterval = 6 * time.Hour
 
-	// CacheMaxAge is how long to keep unverified systems
-	CacheMaxAge = 24 * time.Hour
+	// CacheMaxAge is how long to keep systems that haven't been seen
+	CacheMaxAge = 48 * time.Hour
 )
 
 // DHT is the main coordinator for distributed hash table operations
@@ -481,26 +481,6 @@ func (dht *DHT) PingNode(sys *System) error {
 	return nil
 }
 
-// FindNodeDirect performs a single find_node query to a specific address
-// DEPRECATED: This function is no longer used internally and is scheduled for removal.
-// Use FindNodeDirectToSystem() instead when the recipient System is known.
-func (dht *DHT) FindNodeDirect(address string, targetID uuid.UUID) ([]*System, error) {
-	// Try to look up recipient's UUID from routing table/cache
-	recipientID := dht.routingTable.GetSystemIDByAddress(address)
-
-	msg, err := NewFindNodeRequest(dht.localSystem, recipientID, targetID, "")
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := dht.sendRequest(address, msg)
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.ClosestNodes, nil
-}
-
 // FindNodeDirectToSystem performs a find_node query to a known system
 func (dht *DHT) FindNodeDirectToSystem(sys *System, targetID uuid.UUID) ([]*System, error) {
 	if sys.PeerAddress == "" {
@@ -518,22 +498,6 @@ func (dht *DHT) FindNodeDirectToSystem(sys *System, targetID uuid.UUID) ([]*Syst
 	}
 
 	return resp.ClosestNodes, nil
-}
-
-// AnnounceTo sends an announce message to a specific node by address
-// DEPRECATED: This function is no longer used internally and is scheduled for removal.
-// Use AnnounceToSystem() instead when the recipient System is known.
-func (dht *DHT) AnnounceTo(address string) error {
-	// Try to look up recipient's UUID from routing table/cache
-	recipientID := dht.routingTable.GetSystemIDByAddress(address)
-
-	msg, err := NewAnnounceRequest(dht.localSystem, recipientID, "")
-	if err != nil {
-		return err
-	}
-
-	_, err = dht.sendRequest(address, msg)
-	return err
 }
 
 // AnnounceToSystem sends an announce message to a known system
