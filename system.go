@@ -42,6 +42,7 @@ type System struct {
 	Keys        *KeyPair        `json:"-"`            // Cryptographic keys (never serialized)
 	PeerAddress string          `json:"peer_address"` // Peer mesh address
 	SponsorID   *uuid.UUID      `json:"sponsor_id,omitempty"` // Node that sponsored our network entry
+	InfoVersion int64           `json:"info_version"` // Monotonic version for stale gossip detection
 }
 
 // generateSingleStar creates a deterministic star from a seed

@@ -61,10 +61,11 @@ type RoutingTable struct {
 
 // CachedSystem stores full system info with metadata
 type CachedSystem struct {
-	System      *System
-	LearnedAt   time.Time
-	LearnedFrom uuid.UUID
-	Verified    bool // Have we directly communicated with them?
+	System       *System
+	LearnedAt    time.Time  // When we first learned about this system (or got authoritative update)
+	LearnedFrom  uuid.UUID
+	Verified     bool       // Have we directly communicated with them?
+	LastVerified time.Time  // When we last had direct contact (zero if never)
 }
 
 // NewRoutingTable creates a new routing table for the local node
@@ -166,7 +167,7 @@ func (rt *RoutingTable) Update(sys *System) bool {
 		return false
 	}
 
-	// Always cache the system info
+	// Always cache the system info (CacheSystem handles version checking)
 	rt.CacheSystem(sys, uuid.Nil, false)
 
 	bucketIdx := rt.BucketIndex(sys.ID)
@@ -180,6 +181,17 @@ func (rt *RoutingTable) Update(sys *System) bool {
 	// Check if already in bucket
 	for i, entry := range bucket.entries {
 		if entry.System.ID == sys.ID {
+			// Check InfoVersion before updating routing table entry
+			if sys.InfoVersion > 0 && entry.System.InfoVersion > 0 {
+				if sys.InfoVersion <= entry.System.InfoVersion {
+					// Stale info - don't update routing table entry
+					return true // Still return true because the node exists
+				}
+			} else if sys.InfoVersion == 0 && entry.System.InfoVersion > 0 {
+				// Incoming is old protocol, we have versioned - keep ours
+				return true
+			}
+			
 			// Update existing entry's system info but preserve FailCount
 			// Only direct communication (MarkVerified) should reset FailCount
 			bucket.entries[i].System = sys
@@ -288,6 +300,7 @@ func (rt *RoutingTable) MarkFailed(nodeID uuid.UUID) {
 
 // MarkVerified marks a node as successfully verified (ping response received)
 func (rt *RoutingTable) MarkVerified(nodeID uuid.UUID) {
+	now := time.Now()
 	bucketIdx := rt.BucketIndex(nodeID)
 	bucket := rt.buckets[bucketIdx]
 
@@ -296,8 +309,8 @@ func (rt *RoutingTable) MarkVerified(nodeID uuid.UUID) {
 
 	for i, entry := range bucket.entries {
 		if entry.System.ID == nodeID {
-			bucket.entries[i].LastVerified = time.Now()
-			bucket.entries[i].LastSeen = time.Now()
+			bucket.entries[i].LastVerified = now
+			bucket.entries[i].LastSeen = now
 			bucket.entries[i].FailCount = 0
 			// Also update storage timestamp
 			if rt.storage != nil {
@@ -307,11 +320,12 @@ func (rt *RoutingTable) MarkVerified(nodeID uuid.UUID) {
 		}
 	}
 
-	// Also mark in cache and update last seen time
+	// Also mark in cache and update LastVerified
 	rt.cacheMu.Lock()
 	if cached, ok := rt.systemCache[nodeID]; ok {
 		cached.Verified = true
-		cached.LearnedAt = time.Now() // Update so pruning uses fresh timestamp
+		cached.LastVerified = now
+		cached.LearnedAt = now // Also refresh LearnedAt since we have fresh contact
 		// Also update storage timestamp
 		if rt.storage != nil {
 			rt.storage.TouchPeerSystem(nodeID)
@@ -344,7 +358,7 @@ func (rt *RoutingTable) GetClosest(targetID uuid.UUID, count int) []*System {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
-	// Collect all entries from all buckets
+	// Collect all entries from all buckets (routing table entries are always "live")
 	var allEntries []*BucketEntry
 	for _, bucket := range rt.buckets {
 		bucket.mu.RLock()
@@ -352,14 +366,17 @@ func (rt *RoutingTable) GetClosest(targetID uuid.UUID, count int) []*System {
 		bucket.mu.RUnlock()
 	}
 
-	// Also include verified cached systems not in routing table
+	// Also include recently-verified cached systems not in routing table
+	// Only include systems verified within the last 24 hours to prevent ghost propagation
 	rt.cacheMu.RLock()
 	seenIDs := make(map[uuid.UUID]bool)
 	for _, entry := range allEntries {
 		seenIDs[entry.System.ID] = true
 	}
+	verificationCutoff := time.Now().Add(-24 * time.Hour)
 	for id, cached := range rt.systemCache {
-		if !seenIDs[id] && cached.Verified {
+		if !seenIDs[id] && cached.Verified && 
+		   !cached.LastVerified.IsZero() && cached.LastVerified.After(verificationCutoff) {
 			allEntries = append(allEntries, &BucketEntry{
 				System:   cached.System,
 				LastSeen: cached.LearnedAt,
@@ -475,6 +492,11 @@ func (rt *RoutingTable) BucketLastAccess(bucketIdx int) time.Time {
 // === System Cache Methods ===
 
 // CacheSystem adds a system to the cache
+// InfoVersion is used to prevent stale gossip from overwriting fresh info:
+// - If incoming version > cached version → update system info
+// - If incoming version <= cached version → ignore system info (stale)
+// - If incoming version == 0 (old protocol) → special handling
+// LastVerified is ONLY updated on verified direct contact
 func (rt *RoutingTable) CacheSystem(sys *System, learnedFrom uuid.UUID, verified bool) {
 	if sys == nil || sys.ID == rt.localID {
 		return
@@ -483,32 +505,64 @@ func (rt *RoutingTable) CacheSystem(sys *System, learnedFrom uuid.UUID, verified
 	rt.cacheMu.Lock()
 	defer rt.cacheMu.Unlock()
 
+	now := time.Now()
 	existing, exists := rt.systemCache[sys.ID]
+	
 	if exists {
-		// Update existing entry
-		existing.System = sys
-		// Always refresh LearnedAt when re-gossiped - if systems are still talking
-		// about this node, it's probably alive. Ghosts stop being gossiped because
-		// nodes that try to contact them fail and stop propagating them.
-		existing.LearnedAt = time.Now()
+		// Update LastVerified on direct contact regardless of version
 		if verified {
+			existing.LastVerified = now
 			existing.Verified = true
-			// Only persist to DB on verification - this prevents gossip from
-			// refreshing DB timestamps, allowing ghosts to age out of storage
+			// Update DB's last_verified timestamp
 			if rt.storage != nil {
+				rt.storage.TouchPeerSystem(sys.ID)
+			}
+		}
+		
+		// Check InfoVersion to decide whether to update system info
+		shouldUpdate := false
+		
+		if sys.InfoVersion > 0 && existing.System.InfoVersion > 0 {
+			// Both have versions - only accept if incoming is newer
+			shouldUpdate = sys.InfoVersion > existing.System.InfoVersion
+		} else if sys.InfoVersion == 0 && existing.System.InfoVersion > 0 {
+			// Incoming is legacy (0), we have versioned - keep ours
+			shouldUpdate = false
+		} else if sys.InfoVersion > 0 && existing.System.InfoVersion == 0 {
+			// Incoming has version, ours is legacy - accept upgrade
+			shouldUpdate = true
+		} else {
+			// Both are legacy (0) - accept if verified, otherwise keep existing
+			shouldUpdate = verified
+		}
+		
+		if shouldUpdate {
+			existing.System = sys
+			existing.LearnedAt = now
+			// Save updated info to DB if verified
+			if verified && rt.storage != nil {
 				rt.storage.SavePeerSystem(sys)
 			}
 		}
 	} else {
-		rt.systemCache[sys.ID] = &CachedSystem{
+		// New system - add to cache
+		cached := &CachedSystem{
 			System:      sys,
-			LearnedAt:   time.Now(),
+			LearnedAt:   now,
 			LearnedFrom: learnedFrom,
 			Verified:    verified,
 		}
+		if verified {
+			cached.LastVerified = now
+		}
+		rt.systemCache[sys.ID] = cached
+		
 		// Persist new systems to storage
 		if rt.storage != nil {
 			rt.storage.SavePeerSystem(sys)
+			if verified {
+				rt.storage.TouchPeerSystem(sys.ID)
+			}
 		}
 	}
 }
@@ -567,14 +621,18 @@ func (rt *RoutingTable) GetAllCachedSystems() []*System {
 	return result
 }
 
-// GetVerifiedCachedSystems returns only verified systems from the cache
-func (rt *RoutingTable) GetVerifiedCachedSystems() []*System {
+// GetVerifiedCachedSystems returns only systems verified within maxAge
+// Used for FIND_NODE responses - only share peers we've actually talked to recently
+// This breaks the ghost propagation loop by not sharing stale/unverified peers
+func (rt *RoutingTable) GetVerifiedCachedSystems(maxAge time.Duration) []*System {
 	rt.cacheMu.RLock()
 	defer rt.cacheMu.RUnlock()
 
+	cutoff := time.Now().Add(-maxAge)
 	result := make([]*System, 0)
 	for _, cached := range rt.systemCache {
-		if cached.Verified {
+		// Only include if verified AND LastVerified is recent
+		if cached.Verified && !cached.LastVerified.IsZero() && cached.LastVerified.After(cutoff) {
 			result = append(result, cached.System)
 		}
 	}
@@ -648,7 +706,8 @@ func (rt *RoutingTable) loadFromStorage() {
 }
 
 // PruneCache removes stale entries from the cache
-// Systems are pruned if they haven't been seen in maxAge, regardless of verified status
+// - Verified systems: pruned if LastVerified > maxAge (no recent direct contact)
+// - Unverified systems: pruned if LearnedAt > maxAge (never contacted, just gossip)
 func (rt *RoutingTable) PruneCache(maxAge time.Duration) int {
 	rt.cacheMu.Lock()
 	defer rt.cacheMu.Unlock()
@@ -661,8 +720,17 @@ func (rt *RoutingTable) PruneCache(maxAge time.Duration) int {
 		if rt.isInRoutingTable(id) {
 			continue
 		}
-		// Prune if not seen since cutoff (LearnedAt is updated on each successful contact)
-		if cached.LearnedAt.Before(cutoff) {
+		
+		shouldPrune := false
+		if cached.Verified && !cached.LastVerified.IsZero() {
+			// Verified system: prune based on LastVerified
+			shouldPrune = cached.LastVerified.Before(cutoff)
+		} else {
+			// Unverified system: prune based on LearnedAt
+			shouldPrune = cached.LearnedAt.Before(cutoff)
+		}
+		
+		if shouldPrune {
 			delete(rt.systemCache, id)
 			pruned++
 		}
