@@ -111,6 +111,11 @@ func main() {
 		storage.SaveSystem(system)
 	}
 
+	// Set InfoVersion to current timestamp (milliseconds) on every startup
+	// This ensures our info is considered "fresh" and prevents stale gossip
+	// from overwriting our current state
+	system.InfoVersion = time.Now().UnixMilli()
+
 	// Log system info
 	log.Printf("System ID: %s", system.ID)
 	log.Printf("Public Key: %s...", truncateKey(system.Keys.PublicKey))

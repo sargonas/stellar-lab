@@ -98,6 +98,8 @@ func (s *Storage) createTables() error {
 	star_description TEXT NOT NULL,
 	peer_address TEXT NOT NULL DEFAULT '',
 	sponsor_id TEXT,
+	info_version INTEGER NOT NULL DEFAULT 0,
+	last_verified INTEGER,
 	updated_at INTEGER NOT NULL
 	);
 
@@ -218,6 +220,13 @@ func (s *Storage) runMigrations() error {
 		public_key TEXT NOT NULL,
 		first_seen INTEGER NOT NULL
 	)`)
+	
+	// Add info_version to peer_systems table if it doesn't exist
+	s.db.Exec("ALTER TABLE peer_systems ADD COLUMN info_version INTEGER NOT NULL DEFAULT 0")
+	
+	// Add last_verified to peer_systems table if it doesn't exist
+	s.db.Exec("ALTER TABLE peer_systems ADD COLUMN last_verified INTEGER")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_peer_systems_last_verified ON peer_systems(last_verified)")
 	
 	return nil
 }
@@ -473,31 +482,66 @@ func (s *Storage) IncrementPeerMessageCount(peerID uuid.UUID) error {
 }
 
 // SavePeerSystem caches a peer's full system info
+// Only updates if: entry is new OR incoming info_version > existing
+// This prevents stale gossip from overwriting fresh data
 func (s *Storage) SavePeerSystem(sys *System) error {
 	// Handle nullable sponsor_id
 	var sponsorID *string
 	if sys.SponsorID != nil {
-		s := sys.SponsorID.String()
-		sponsorID = &s
+		str := sys.SponsorID.String()
+		sponsorID = &str
 	}
 
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO peer_systems (
-			id, name, x, y, z,
-			star_class, star_color, star_description,
-			peer_address, sponsor_id, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
-		sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
-		sys.PeerAddress, sponsorID, time.Now().Unix())
-	return err
+	// Check existing version first
+	var existingVersion int64
+	err := s.db.QueryRow(`SELECT info_version FROM peer_systems WHERE id = ?`, 
+		sys.ID.String()).Scan(&existingVersion)
+	
+	if err == sql.ErrNoRows {
+		// New entry - insert it
+		_, err = s.db.Exec(`
+			INSERT INTO peer_systems (
+				id, name, x, y, z,
+				star_class, star_color, star_description,
+				peer_address, sponsor_id, info_version, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
+			sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
+			sys.PeerAddress, sponsorID, sys.InfoVersion, time.Now().Unix())
+		return err
+	} else if err != nil {
+		return err
+	}
+
+	// Existing entry - check version
+	// Accept if: incoming > existing, OR incoming is versioned and existing is legacy (0)
+	// For legacy-to-legacy (both 0), accept update (can't tell which is newer)
+	if sys.InfoVersion > existingVersion || 
+	   (sys.InfoVersion > 0 && existingVersion == 0) ||
+	   (sys.InfoVersion == 0 && existingVersion == 0) {
+		_, err = s.db.Exec(`
+			UPDATE peer_systems SET
+				name = ?, x = ?, y = ?, z = ?,
+				star_class = ?, star_color = ?, star_description = ?,
+				peer_address = ?, sponsor_id = ?, info_version = ?, updated_at = ?
+			WHERE id = ?
+		`, sys.Name, sys.X, sys.Y, sys.Z,
+			sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
+			sys.PeerAddress, sponsorID, sys.InfoVersion, time.Now().Unix(), sys.ID.String())
+		return err
+	}
+
+	// Stale data - don't update
+	return nil
 }
 
-// TouchPeerSystem updates only the timestamp for a peer system
-// Used when we verify a system is alive without changing its info
+// TouchPeerSystem sets last_verified timestamp for a peer system
+// Only called on direct contact (ping response, announce received, etc.)
+// This is what keeps a peer "alive" for FIND_NODE response filtering
 func (s *Storage) TouchPeerSystem(systemID uuid.UUID) error {
-	_, err := s.db.Exec(`UPDATE peer_systems SET updated_at = ? WHERE id = ?`,
-		time.Now().Unix(), systemID.String())
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`UPDATE peer_systems SET last_verified = ?, updated_at = ? WHERE id = ?`,
+		now, now, systemID.String())
 	return err
 }
 
@@ -509,11 +553,11 @@ func (s *Storage) GetPeerSystem(systemID uuid.UUID) (*System, error) {
 	var sponsorIDStr sql.NullString
 
 	err := s.db.QueryRow(`
-		SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, sponsor_id, updated_at
+		SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, sponsor_id, info_version, updated_at
 		FROM peer_systems WHERE id = ?
 	`, systemID.String()).Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
 		&sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
-		&sys.PeerAddress, &sponsorIDStr, &updatedAt)
+		&sys.PeerAddress, &sponsorIDStr, &sys.InfoVersion, &updatedAt)
 
 	if err != nil {
 		return nil, err
@@ -577,7 +621,7 @@ func (s *Storage) CountKnownSystems() int {
 // GetAllPeerSystems returns all cached peer system info (not just direct peers)
 func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     rows, err := s.db.Query(`
-        SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, sponsor_id
+        SELECT id, name, x, y, z, star_class, star_color, star_description, peer_address, sponsor_id, info_version
         FROM peer_systems
     `)
     if err != nil {
@@ -594,7 +638,7 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
 
         err := rows.Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
             &sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
-            &peerAddress, &sponsorIDStr)
+            &peerAddress, &sponsorIDStr, &sys.InfoVersion)
         if err != nil {
             continue
         }
@@ -702,9 +746,17 @@ func (s *Storage) PrunePeerConnections(maxAge time.Duration) (int64, error) {
 }
 
 // PrunePeerSystems removes stale peer system data
+// - Unverified systems (last_verified IS NULL): pruned after maxAge since updated_at
+// - Verified systems: pruned after 2x maxAge since last_verified
 func (s *Storage) PrunePeerSystems(maxAge time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-maxAge).Unix()
-	result, err := s.db.Exec(`DELETE FROM peer_systems WHERE updated_at < ?`, cutoff)
+	unverifiedCutoff := time.Now().Add(-maxAge).Unix()
+	verifiedCutoff := time.Now().Add(-2 * maxAge).Unix() // Give verified systems more time
+	
+	result, err := s.db.Exec(`
+		DELETE FROM peer_systems 
+		WHERE (last_verified IS NULL AND updated_at < ?)
+		   OR (last_verified IS NOT NULL AND last_verified < ?)
+	`, unverifiedCutoff, verifiedCutoff)
 	if err != nil {
 		return 0, err
 	}
