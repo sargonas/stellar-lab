@@ -4,7 +4,7 @@ A silly program for homelabbers and others to run when you have a few spare megs
 
 ## Technical Overview
 
-Stellar Lab creates a virtual galaxy where each participant runs a node representing their star system. Systems have procedurally generated identities—star types, binary/trinary compositions, and 3D coordinates—all derived deterministically from cryptographic seeds. Nodes build reputation through cryptographically signed attestations of their interactions with peers.
+Stellar Lab creates a virtual galaxy where each participant runs a node representing their star system. Systems have procedurally generated identities... star types, binary/trinary compositions, and 3D coordinates... all derived deterministically from cryptographic seeds. Nodes build reputation through cryptographically signed attestations of their interactions with peers.
 
 **Key Properties:**
 - **Guaranteed discovery**: Any node can find any other node in O(log n) hops via DHT (Distributed Hash Table)
