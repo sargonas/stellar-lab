@@ -103,8 +103,6 @@ func (s *Storage) createTables() error {
 	updated_at INTEGER NOT NULL
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_peer_systems_last_verified ON peer_systems(last_verified);
-
 	CREATE TABLE IF NOT EXISTS peer_connections (
 		system_id TEXT NOT NULL,
 		peer_id TEXT NOT NULL,
