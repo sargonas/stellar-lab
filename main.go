@@ -35,19 +35,36 @@ func main() {
 		log.Fatalf("Error: %v", err)
 	}
 
-	// Validate public address
+	// Validate public address is specified
 	if *publicAddr == "" {
 		log.Fatal("Error: -public-address or STELLAR_PUBLIC_ADDRESS is required (e.g., \"myhost.com:7867\")")
 	}
 
 	peerAddr := *publicAddr
 
-	// Extract port from public address for local binding
-	peerPort := "7867" // default
+	// Extract port from public address for local binding and UPnP
+	peerPort := 7867 // default
 	if idx := strings.LastIndex(*publicAddr, ":"); idx != -1 {
-		peerPort = (*publicAddr)[idx+1:]
+		fmt.Sscanf((*publicAddr)[idx+1:], "%d", &peerPort)
 	}
-	listenAddr := "0.0.0.0:" + peerPort
+	listenAddr := fmt.Sprintf("0.0.0.0:%d", peerPort)
+
+	// Attempt UPnP/NAT-PMP port forwarding automatically
+	// This helps users behind NAT without manual router configuration
+	var natTraversal *NATTraversal
+	natTraversal = NewNATTraversal()
+	extAddr, err := natTraversal.Setup(NATConfig{
+		InternalPort:  peerPort,
+		ExternalPort:  peerPort,
+		Description:   "Stellar Lab P2P",
+		LeaseDuration: 2 * time.Hour,
+	})
+	if err != nil {
+		log.Printf("UPnP/NAT-PMP: not available (%v) - ensure port %d is forwarded manually if behind NAT", err, peerPort)
+		natTraversal = nil // Clear so we don't try to close it later
+	} else {
+		log.Printf("UPnP/NAT-PMP: port %d forwarded via %s (external: %s)", peerPort, natTraversal.GetProtocol(), extAddr)
+	}
 
 	// Generate addresses
 	webAddr := *address
@@ -182,6 +199,9 @@ func main() {
 	<-sigChan
 
 	log.Printf("Shutting down...")
+	if natTraversal != nil {
+		natTraversal.Close()
+	}
 	dht.Stop()
 	log.Printf("Goodbye!")
 }
