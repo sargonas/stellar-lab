@@ -352,8 +352,8 @@ func (dht *DHT) handleDiscoveryInfo(w http.ResponseWriter, r *http.Request) {
 		seenIDs[sys.ID] = true
 	}
 
-	// Also add verified cached systems not already included
-	for _, sys := range dht.routingTable.GetVerifiedCachedSystems() {
+	// Also add verified cached systems not already included (only recently verified)
+	for _, sys := range dht.routingTable.GetVerifiedCachedSystems(24 * time.Hour) {
 		if !seenIDs[sys.ID] {
 			systems = append(systems, DiscoverySystem{
 				ID:          sys.ID.String(),
