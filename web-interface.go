@@ -313,8 +313,7 @@ func (w *WebInterface) handleConnectionsAPI(rw http.ResponseWriter, r *http.Requ
     }
 
     // Also add our direct connections (routing table peers)
-    // Peers in our routing table have had bidirectional communication with us,
-    // so we add BOTH directions to enable proper reciprocity detection
+    // These are definitely connected to us
     selfID := w.dht.GetLocalSystem().ID.String()
     selfName := w.dht.GetLocalSystem().Name
     peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
@@ -328,33 +327,18 @@ func (w *WebInterface) handleConnectionsAPI(rw http.ResponseWriter, r *http.Requ
         existingEdges[key2] = true
     }
     
-    // Add our direct peer connections (both directions for reciprocity)
+    // Add our direct peer connections
     for _, peer := range peers {
         peerID := peer.ID.String()
-        
-        // Add self → peer
-        keyOut := selfID + ":" + peerID
-        if !existingEdges[keyOut] {
+        key := selfID + ":" + peerID
+        if !existingEdges[key] {
             connections = append(connections, TopologyEdge{
                 FromID:   selfID,
                 FromName: selfName,
                 ToID:     peerID,
                 ToName:   peer.Name,
             })
-            existingEdges[keyOut] = true
-        }
-        
-        // Add peer → self (reciprocal direction)
-        // This is valid because peers in routing table have communicated with us
-        keyIn := peerID + ":" + selfID
-        if !existingEdges[keyIn] {
-            connections = append(connections, TopologyEdge{
-                FromID:   peerID,
-                FromName: peer.Name,
-                ToID:     selfID,
-                ToName:   selfName,
-            })
-            existingEdges[keyIn] = true
+            existingEdges[key] = true
         }
     }
 
@@ -646,6 +630,10 @@ const indexTemplate = `<!DOCTYPE html>
                 <div class="stat-row">
                     <span class="stat-label">Database</span>
                     <span id="stat-dbsize" class="stat-value">{{.DatabaseSize}}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Uptime Streak</span>
+                    <span id="stat-uptime" class="stat-value">{{printf "%.1f" .LongevityWeeks}} weeks</span>
                 </div>
             </div>
 
@@ -1279,7 +1267,7 @@ const indexTemplate = `<!DOCTYPE html>
                 
                 // Animate ring pulse for self
                 if (selfRing) {
-                    ringPulseTime += 0.0032; // ~5 second cycle at 60fps
+                    ringPulseTime += 0.008; // ~2 second cycle at 60fps
                     const cycle = ringPulseTime % 1; // 0 to 1 cycle
                     const scale = 1 + cycle * 2.5; // 1 to 3.5
                     const opacity = 0.6 * (1 - cycle); // 0.6 to 0
@@ -1348,6 +1336,7 @@ const indexTemplate = `<!DOCTYPE html>
                 document.getElementById('stat-longbonus').textContent = '+' + longevityBonus.toFixed(1) + '%';
                 document.getElementById('stat-longbar').style.width = longevityProgress.toFixed(1) + '%';
                 document.getElementById('stat-longweeks').textContent = longevityWeeks.toFixed(1) + ' / 52 weeks to max (+52%)';
+                document.getElementById('stat-uptime').textContent = longevityWeeks.toFixed(1) + ' weeks';
                 
                 // Fetch stats
                 const statsResp = await fetch('/api/stats');
@@ -1413,10 +1402,16 @@ const indexTemplate = `<!DOCTYPE html>
         setInterval(refreshStats, 30000);
 
         async function exportTopology() {
+            const systemsWithStatus = knownSystems.map(sys => ({
+                ...sys,
+                status: sys.id === selfSystem.id ? 'self' : 
+                        livePeerIDs.has(sys.id) ? 'live' : 'cached'
+            }));
+            
             const data = {
                 exported_at: new Date().toISOString(),
-                local_system: selfSystem,
-                known_systems: knownSystems,
+                local_system: { ...selfSystem, status: 'self' },
+                known_systems: systemsWithStatus,
                 connections: cachedConnections,
                 live_peer_ids: Array.from(livePeerIDs)
             };
