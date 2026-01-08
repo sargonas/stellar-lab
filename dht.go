@@ -578,7 +578,7 @@ func (dht *DHT) warnIfOldProtocol(msg *DHTMessage) {
 
 	// Log warning
 	log.Printf("⚠ %s (%s) is using old protocol v%s without targeted attestations. "+
-		"They should upgrade to v1.6.0+ for credit transfer support.",
+		"They should upgrade to v1.6.0+.",
 		msg.FromSystem.Name, msg.FromSystem.ID.String()[:8], msg.Version)
 
 	// Update warning time
