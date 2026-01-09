@@ -1,0 +1,150 @@
+name: Test Suite
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Test type to run'
+        required: true
+        default: 'comprehensive'
+        type: choice
+        options:
+          - quick
+          - medium
+          - comprehensive
+      node_count:
+        description: 'Number of nodes to test'
+        required: false
+        default: '5'
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod verify
+          sudo apt-get update
+          sudo apt-get install -y bc
+      
+      - name: Run Go unit tests
+        run: |
+          echo "## Running Go unit tests..."
+          go test -v -race -coverprofile=coverage.out ./...
+          echo "## Unit tests complete"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report-${{ github.run_id }}
+          path: coverage.out
+          retention-days: 7
+
+      - name: Make test script executable
+        run: chmod +x test-cluster.sh
+
+      - name: Determine test type
+        id: test_type
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "type=quick" >> $GITHUB_OUTPUT
+            echo "Running quick tests for PR"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "type=${{ github.event.inputs.test_type }}" >> $GITHUB_OUTPUT
+            echo "Running ${{ github.event.inputs.test_type }} tests (manual trigger)"
+          else
+            echo "type=comprehensive" >> $GITHUB_OUTPUT
+            echo "Running comprehensive tests for main branch"
+          fi
+      
+      - name: Run integration tests
+        run: |
+          TEST_TYPE="${{ steps.test_type.outputs.type }}"
+          if [[ "$TEST_TYPE" == "quick" ]]; then
+            ./test-cluster.sh quick
+          elif [[ "$TEST_TYPE" == "medium" ]]; then
+            ./test-cluster.sh medium
+          else
+            ./test-cluster.sh all --build
+          fi
+        env:
+          STELLAR_TEST_NODES: ${{ github.event.inputs.node_count || '5' }}
+          VERBOSE: 1
+      
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: quick-test-reports-${{ github.run_id }}
+          path: |
+            .test-cluster/reports/
+            .test-cluster/logs/
+          retention-days: 7
+      
+      - name: Parse test results
+        if: always()
+        id: parse_results
+        run: |
+          if [ -f .test-cluster/reports/test-report.json ]; then
+            PASSED=$(jq -r '.summary.passed' .test-cluster/reports/test-report.json)
+            FAILED=$(jq -r '.summary.failed' .test-cluster/reports/test-report.json)
+            echo "passed=$PASSED" >> $GITHUB_OUTPUT
+            echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Display test summary
+        if: always()
+        run: |
+          if [ -f .test-cluster/reports/summary.txt ]; then
+            echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat .test-cluster/reports/summary.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Comment on PR with results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = '.test-cluster/reports/test-report.json';
+            
+            if (fs.existsSync(reportPath)) {
+              const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+              const comment = `## 🧪 Test Results
+              
+              **Summary:** ${report.summary.passed}/${report.summary.total_tests} tests passed (${report.summary.success_rate})
+              
+              - ✅ Passed: ${report.summary.passed}
+              - ❌ Failed: ${report.summary.failed}
+              - ⏱️ Duration: ${report.test_run.duration}
+              - 🖥️ Nodes tested: ${report.test_run.nodes}
+              
+              ${report.summary.failed > 0 ? '### Failed Tests\n' + report.tests.filter(t => t.result === 'FAIL').map(t => `- ${t.name}: ${t.details}`).join('\n') : ''}
+              
+              [View full report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
