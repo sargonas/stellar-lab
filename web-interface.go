@@ -35,6 +35,8 @@ type WebInterfaceData struct {
     NodeHealthClass   string
     RoutingTableSize  int
     CacheSize         int
+    // Peer state breakdown
+    PeerStates        PeerStateBreakdown
     // Stellar Credits
     CreditBalance     int64
     CreditRank        string
@@ -207,6 +209,7 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         NodeHealthClass:  healthClass,
         RoutingTableSize: rtSize,
         CacheSize:        rt.GetCacheSize(),
+        PeerStates:       rt.GetPeerStateBreakdown(),
         // Credits
         CreditBalance:     creditBalance,
         CreditRank:        creditRank,
@@ -241,7 +244,7 @@ func (w *WebInterface) handleKnownSystemsAPI(rw http.ResponseWriter, r *http.Req
 
 func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
     stats := w.dht.GetNetworkStats()
-    
+
     // Merge in database stats for AJAX refresh
     dbStats, err := w.storage.GetDatabaseStats()
     if err == nil && dbStats != nil {
@@ -253,7 +256,11 @@ func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
             stats["database_size"] = formatBytes(sizeBytes)
         }
     }
-    
+
+    // Add peer state breakdown
+    breakdown := w.dht.GetRoutingTable().GetPeerStateBreakdown()
+    stats["peer_states"] = breakdown
+
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(stats)
 }
@@ -564,6 +571,39 @@ const indexTemplate = `<!DOCTYPE html>
             font-size: 0.75em;
             color: #666;
         }
+        .peer-states {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin: 12px 0;
+            padding: 12px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+        }
+        .peer-state {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .state-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .state-active { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+        .state-pending { background: #60a5fa; box-shadow: 0 0 6px #60a5fa; }
+        .state-degraded { background: #facc15; box-shadow: 0 0 6px #facc15; }
+        .state-stale { background: #f87171; box-shadow: 0 0 6px #f87171; }
+        .state-label {
+            color: #888;
+            font-size: 0.85em;
+            flex-grow: 1;
+        }
+        .state-count {
+            font-weight: 500;
+            font-size: 0.95em;
+        }
         .map-tooltip .tooltip-class {
             color: #a78bfa;
             font-size: 11px;
@@ -622,22 +662,36 @@ const indexTemplate = `<!DOCTYPE html>
             </div>
 
             <div class="card">
-                <h2>Stellar Transport</h2>
+                <h2>Network Status</h2>
                 <div class="stat-row">
-                    <span class="stat-label">Routing Table</span>
-                    <span id="stat-routing" class="stat-value">{{.RoutingTableSize}} nodes</span>
+                    <span class="stat-label">Known Systems</span>
+                    <span id="stat-galaxy" class="stat-value">{{.TotalSystems}} total</span>
                 </div>
-                <div class="stat-row">
-                    <span class="stat-label">System Cache</span>
-                    <span id="stat-cache" class="stat-value">{{.CacheSize}} systems</span>
+                <div class="peer-states" id="peer-states">
+                    <div class="peer-state">
+                        <span class="state-dot state-active"></span>
+                        <span class="state-label">Active</span>
+                        <span id="state-active" class="state-count">{{.PeerStates.Active}}</span>
+                    </div>
+                    <div class="peer-state">
+                        <span class="state-dot state-pending"></span>
+                        <span class="state-label">Pending</span>
+                        <span id="state-pending" class="state-count">{{.PeerStates.Pending}}</span>
+                    </div>
+                    <div class="peer-state">
+                        <span class="state-dot state-degraded"></span>
+                        <span class="state-label">Degraded</span>
+                        <span id="state-degraded" class="state-count">{{.PeerStates.Degraded}}</span>
+                    </div>
+                    <div class="peer-state">
+                        <span class="state-dot state-stale"></span>
+                        <span class="state-label">Stale</span>
+                        <span id="state-stale" class="state-count">{{.PeerStates.Stale}}</span>
+                    </div>
                 </div>
-                <div class="stat-row">
-                    <span class="stat-label">Known Galaxy</span>
-                    <span id="stat-galaxy" class="stat-value">{{.TotalSystems}} systems</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Max Peers</span>
-                    <span class="stat-value">{{.MaxPeers}} ({{.PeerCapacityDesc}})</span>
+                <div class="stat-row" style="margin-top: 12px;">
+                    <span class="stat-label">Peer Capacity</span>
+                    <span class="stat-value">{{.MaxPeers}} max ({{.PeerCapacityDesc}})</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Attestations</span>
@@ -858,6 +912,14 @@ const indexTemplate = `<!DOCTYPE html>
         let cachedConnections = [];
         let selfRing = null;
         let ringPulseTime = 0;
+        let labelsContainer = null;
+        let labelElements = [];
+        let systemById = {};
+        let connectionCounts = {};
+
+        // Mutable data that gets refreshed
+        let currentKnownSystems = [...knownSystems];
+        let currentLivePeerIDs = new Set(livePeerIDs);
 
         async function fetchConnections() {
             try {
@@ -997,6 +1059,146 @@ const indexTemplate = `<!DOCTYPE html>
             controls.update();
         }
 
+        function clearMapContent() {
+            // Remove existing stars
+            starMeshes.forEach(mesh => scene.remove(mesh));
+            starMeshes = [];
+
+            // Remove self ring
+            if (selfRing) {
+                scene.remove(selfRing);
+                selfRing = null;
+            }
+
+            // Remove connection lines
+            connectionLines.forEach(line => scene.remove(line));
+            connectionLines = [];
+
+            // Clear labels
+            labelElements.forEach(item => item.element.remove());
+            labelElements = [];
+        }
+
+        function rebuildMapContent() {
+            if (!scene || !labelsContainer) return;
+
+            clearMapContent();
+
+            const allSystems = [selfSystem, ...currentKnownSystems];
+            systemById = {};
+            allSystems.forEach(s => { systemById[s.id] = s; });
+
+            // Add stars
+            allSystems.forEach(sys => {
+                const isSelf = sys.id === selfSystem.id;
+                const isLive = currentLivePeerIDs.has(sys.id);
+                const isCached = !isSelf && !isLive;
+                const size = isSelf ? 40 : (isLive ? 28 : 22);
+                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached, sys.starClass);
+                star.position.set(sys.x, sys.y, sys.z);
+                star.userData = { system: sys, isSelf: isSelf, isLive: isLive, isCached: isCached };
+                scene.add(star);
+                starMeshes.push(star);
+
+                // Add ring pulse effect for self
+                if (isSelf) {
+                    const ringGeometry = new THREE.RingGeometry(18, 22, 32);
+                    const ringMaterial = new THREE.MeshBasicMaterial({
+                        color: 0x60a5fa,
+                        transparent: true,
+                        opacity: 0.6,
+                        side: THREE.DoubleSide
+                    });
+                    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ring.position.set(sys.x, sys.y, sys.z);
+                    ring.userData = { startScale: 1, maxScale: 3.5 };
+                    scene.add(ring);
+                    selfRing = ring;
+                }
+
+                // Create HTML label
+                const label = document.createElement('div');
+                label.textContent = sys.name;
+                label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
+                if (isSelf) {
+                    label.style.color = '#60a5fa';
+                    label.style.fontWeight = '500';
+                } else if (isLive) {
+                    label.style.color = '#4ade80';
+                } else {
+                    label.style.color = '#666';
+                }
+                labelsContainer.appendChild(label);
+                labelElements.push({ element: label, position: star.position, isSelf: isSelf });
+            });
+
+            // Build reciprocity map
+            const edgeSet = new Set();
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    edgeSet.add(conn.from_id + ':' + conn.to_id);
+                });
+            }
+
+            function isReciprocal(fromId, toId) {
+                return edgeSet.has(fromId + ':' + toId) && edgeSet.has(toId + ':' + fromId);
+            }
+
+            // Build connection count per system
+            connectionCounts = {};
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    connectionCounts[conn.from_id] = (connectionCounts[conn.from_id] || 0) + 1;
+                    connectionCounts[conn.to_id] = (connectionCounts[conn.to_id] || 0) + 1;
+                });
+            }
+
+            // Add connection lines
+            const processedEdges = new Set();
+            if (cachedConnections && cachedConnections.length > 0) {
+                cachedConnections.forEach(conn => {
+                    const from = systemById[conn.from_id];
+                    const to = systemById[conn.to_id];
+                    if (!from || !to) return;
+
+                    // Avoid drawing same edge twice
+                    const edgeKey = [conn.from_id, conn.to_id].sort().join(':');
+                    if (processedEdges.has(edgeKey)) return;
+                    processedEdges.add(edgeKey);
+
+                    const reciprocal = isReciprocal(conn.from_id, conn.to_id);
+                    const points = [
+                        new THREE.Vector3(from.x, from.y, from.z),
+                        new THREE.Vector3(to.x, to.y, to.z)
+                    ];
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+                    let line;
+                    if (reciprocal) {
+                        const material = new THREE.LineBasicMaterial({
+                            color: 0x64c8ff,
+                            transparent: true,
+                            opacity: 0.35
+                        });
+                        line = new THREE.Line(geometry, material);
+                    } else {
+                        const material = new THREE.LineDashedMaterial({
+                            color: 0xffaa44,
+                            transparent: true,
+                            opacity: 0.3,
+                            dashSize: 30,
+                            gapSize: 20
+                        });
+                        line = new THREE.Line(geometry, material);
+                        line.computeLineDistances();
+                    }
+                    line.userData = { fromId: conn.from_id, toId: conn.to_id, reciprocal: reciprocal };
+                    scene.add(line);
+                    connectionLines.push(line);
+                });
+            }
+        }
+
         async function initGalaxyMap() {
             const container = document.getElementById('galaxy-map');
             if (!container) return;
@@ -1062,128 +1264,13 @@ const indexTemplate = `<!DOCTYPE html>
             hint.textContent = 'Left-drag: rotate • Right-drag: pan • Scroll: zoom';
             container.appendChild(hint);
 
-            const allSystems = [selfSystem, ...knownSystems];
-            const systemById = {};
-            allSystems.forEach(s => { systemById[s.id] = s; });
-
             // Labels container
-            const labelsContainer = document.createElement('div');
+            labelsContainer = document.createElement('div');
             labelsContainer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:hidden;';
             container.appendChild(labelsContainer);
-            
-            const labelElements = [];
 
-            // Add stars
-            allSystems.forEach(sys => {
-                const isSelf = sys.id === selfSystem.id;
-                const isLive = livePeerIDs.has(sys.id);
-                const isCached = !isSelf && !isLive;
-                const size = isSelf ? 40 : (isLive ? 28 : 22);
-                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached, sys.starClass);
-                star.position.set(sys.x, sys.y, sys.z);
-                star.userData = { system: sys, isSelf: isSelf, isLive: isLive, isCached: isCached };
-                scene.add(star);
-                starMeshes.push(star);
-                
-                // Add ring pulse effect for self
-                if (isSelf) {
-                    const ringGeometry = new THREE.RingGeometry(18, 22, 32);
-                    const ringMaterial = new THREE.MeshBasicMaterial({ 
-                        color: 0x60a5fa, 
-                        transparent: true, 
-                        opacity: 0.6,
-                        side: THREE.DoubleSide
-                    });
-                    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-                    ring.position.set(sys.x, sys.y, sys.z);
-                    ring.userData = { startScale: 1, maxScale: 3.5 };
-                    scene.add(ring);
-                    selfRing = ring;
-                }
-                
-                // Create HTML label
-                const label = document.createElement('div');
-                label.textContent = sys.name;
-                label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
-                if (isSelf) {
-                    label.style.color = '#60a5fa';
-                    label.style.fontWeight = '500';
-                } else if (isLive) {
-                    label.style.color = '#4ade80';
-                } else {
-                    label.style.color = '#666';
-                }
-                labelsContainer.appendChild(label);
-                labelElements.push({ element: label, position: star.position, isSelf: isSelf });
-            });
-
-            // Build reciprocity map
-            const edgeSet = new Set();
-            if (cachedConnections) {
-                cachedConnections.forEach(conn => {
-                    edgeSet.add(conn.from_id + ':' + conn.to_id);
-                });
-            }
-            
-            function isReciprocal(fromId, toId) {
-                return edgeSet.has(fromId + ':' + toId) && edgeSet.has(toId + ':' + fromId);
-            }
-
-            // Build connection count per system
-            const connectionCounts = {};
-            if (cachedConnections) {
-                cachedConnections.forEach(conn => {
-                    connectionCounts[conn.from_id] = (connectionCounts[conn.from_id] || 0) + 1;
-                    connectionCounts[conn.to_id] = (connectionCounts[conn.to_id] || 0) + 1;
-                });
-            }
-
-            // Add connection lines
-            const processedEdges = new Set();
-            if (cachedConnections && cachedConnections.length > 0) {
-                cachedConnections.forEach(conn => {
-                    const from = systemById[conn.from_id];
-                    const to = systemById[conn.to_id];
-                    if (!from || !to) return;
-                    
-                    // Avoid drawing same edge twice
-                    const edgeKey = [conn.from_id, conn.to_id].sort().join(':');
-                    if (processedEdges.has(edgeKey)) return;
-                    processedEdges.add(edgeKey);
-                    
-                    const reciprocal = isReciprocal(conn.from_id, conn.to_id);
-                    const points = [
-                        new THREE.Vector3(from.x, from.y, from.z),
-                        new THREE.Vector3(to.x, to.y, to.z)
-                    ];
-                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-                    
-                    let line;
-                    if (reciprocal) {
-                        // Solid line for reciprocal connections
-                        const material = new THREE.LineBasicMaterial({ 
-                            color: 0x64c8ff, 
-                            transparent: true, 
-                            opacity: 0.35
-                        });
-                        line = new THREE.Line(geometry, material);
-                    } else {
-                        // Dashed line for one-way connections
-                        const material = new THREE.LineDashedMaterial({ 
-                            color: 0xffaa44, 
-                            transparent: true, 
-                            opacity: 0.3,
-                            dashSize: 30,
-                            gapSize: 20
-                        });
-                        line = new THREE.Line(geometry, material);
-                        line.computeLineDistances();
-                    }
-                    line.userData = { fromId: conn.from_id, toId: conn.to_id, reciprocal: reciprocal };
-                    scene.add(line);
-                    connectionLines.push(line);
-                });
-            }
+            // Build initial map content (stars, connections, labels)
+            rebuildMapContent();
 
             // Add subtle starfield background
             const starfieldGeo = new THREE.BufferGeometry();
@@ -1359,13 +1446,20 @@ const indexTemplate = `<!DOCTYPE html>
                 if (stats.database_size) {
                     document.getElementById('stat-dbsize').textContent = stats.database_size;
                 }
-                
+
+                // Update peer state breakdown
+                if (stats.peer_states) {
+                    document.getElementById('state-active').textContent = stats.peer_states.active || 0;
+                    document.getElementById('state-pending').textContent = stats.peer_states.pending || 0;
+                    document.getElementById('state-degraded').textContent = stats.peer_states.degraded || 0;
+                    document.getElementById('state-stale').textContent = stats.peer_states.stale || 0;
+                }
+
                 // Fetch peers for routing table
                 const peersResp = await fetch('/api/peers');
                 const peers = await peersResp.json() || [];
-                
+
                 const routingSize = peers.length;
-                document.getElementById('stat-routing').textContent = routingSize + ' nodes';
                 document.getElementById('routing-title').textContent = 'Routing Table (' + routingSize + ' nodes)';
                 
                 // Update health based on routing table size
@@ -1395,15 +1489,36 @@ const indexTemplate = `<!DOCTYPE html>
                     ).join('');
                 }
                 
-                // Fetch known systems for counts
+                // Fetch known systems for counts AND map update
                 const systemsResp = await fetch('/api/known-systems');
                 const systems = await systemsResp.json() || [];
-                
-                document.getElementById('stat-cache').textContent = systems.length + ' systems';
+
                 const totalSystems = systems.length + 1;
-                document.getElementById('stat-galaxy').textContent = totalSystems + ' systems';
+                document.getElementById('stat-galaxy').textContent = totalSystems + ' total';
                 document.getElementById('galaxy-title').textContent = 'Galaxy Map (' + totalSystems + ' systems)';
-                
+
+                // Update live peer IDs set from peers response
+                currentLivePeerIDs = new Set(peers.map(p => p.id));
+
+                // Update known systems for map (convert to map format)
+                currentKnownSystems = systems.map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    x: s.x,
+                    y: s.y,
+                    z: s.z,
+                    color: s.stars?.primary?.color || '#ffffff',
+                    starClass: s.stars?.primary?.class || 'M',
+                    starDesc: s.stars?.primary?.description || ''
+                }));
+
+                // Fetch fresh connections
+                const connectionsResp = await fetch('/api/connections');
+                cachedConnections = await connectionsResp.json() || [];
+
+                // Rebuild the 3D map with updated data
+                rebuildMapContent();
+
             } catch (err) {
                 console.error('Failed to refresh stats:', err);
             }
@@ -1416,9 +1531,9 @@ const indexTemplate = `<!DOCTYPE html>
             const data = {
                 exported_at: new Date().toISOString(),
                 local_system: selfSystem,
-                known_systems: knownSystems,
+                known_systems: currentKnownSystems,
                 connections: cachedConnections,
-                live_peer_ids: Array.from(livePeerIDs)
+                live_peer_ids: Array.from(currentLivePeerIDs)
             };
             
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
