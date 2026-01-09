@@ -429,38 +429,6 @@ func (s *Storage) SaveAttestation(attestation *Attestation, receivedBy uuid.UUID
 	return err
 }
 
-// GetAttestations retrieves all attestations for a system
-func (s *Storage) GetAttestations(systemID uuid.UUID) ([]*Attestation, error) {
-	rows, err := s.db.Query(`
-		SELECT from_system_id, to_system_id, timestamp, message_type, signature, public_key
-		FROM attestations
-		WHERE from_system_id = ? OR to_system_id = ?
-		ORDER BY timestamp ASC
-	`, systemID.String(), systemID.String())
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var attestations []*Attestation
-	for rows.Next() {
-		var att Attestation
-		var fromID, toID string
-
-		err := rows.Scan(&fromID, &toID, &att.Timestamp, &att.MessageType, &att.Signature, &att.PublicKey)
-		if err != nil {
-			continue
-		}
-
-		att.FromSystemID = uuid.MustParse(fromID)
-		att.ToSystemID = uuid.MustParse(toID)
-		attestations = append(attestations, &att)
-	}
-
-	return attestations, nil
-}
-
 // GetAttestationCount returns the count of verified attestations
 func (s *Storage) GetAttestationCount(systemID uuid.UUID) (int, error) {
 	var count int
@@ -608,16 +576,6 @@ func (s *Storage) GetDatabaseStats() (map[string]interface{}, error) {
     }
 
     return stats, nil
-}
-
-// CountKnownSystems returns the total number of unique systems we've heard about
-func (s *Storage) CountKnownSystems() int {
-    var count int
-    err := s.db.QueryRow(`SELECT COUNT(*) FROM peer_systems`).Scan(&count)
-    if err != nil {
-        return 0
-    }
-    return count
 }
 
 // GetAllPeerSystems returns all cached peer system info (not just direct peers)
@@ -827,59 +785,6 @@ type TopologyEdge struct {
 	FromName string `json:"from_name"`
 	ToID     string `json:"to_id"`
 	ToName   string `json:"to_name"`
-}
-
-// GetRecentTopology returns inferred connections from recent attestations
-func (s *Storage) GetRecentTopology(maxAge time.Duration) ([]TopologyEdge, error) {
-	cutoff := time.Now().Add(-maxAge).Unix()
-
-	rows, err := s.db.Query(`
-		SELECT DISTINCT from_system_id, to_system_id
-		FROM attestations
-		WHERE timestamp > ?
-	`, cutoff)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	// Collect unique edges (deduplicate A→B and B→A)
-	edgeMap := make(map[string]TopologyEdge)
-
-	for rows.Next() {
-		var fromID, toID string
-		if err := rows.Scan(&fromID, &toID); err != nil {
-			continue
-		}
-
-		// Create canonical edge key (smaller ID first) to deduplicate
-		var key string
-		if fromID < toID {
-			key = fromID + ":" + toID
-		} else {
-			key = toID + ":" + fromID
-		}
-
-		if _, exists := edgeMap[key]; !exists {
-			fromName := s.getSystemName(fromID)
-			toName := s.getSystemName(toID)
-
-			edgeMap[key] = TopologyEdge{
-				FromID:   fromID,
-				FromName: fromName,
-				ToID:     toID,
-				ToName:   toName,
-			}
-		}
-	}
-
-	// Convert map to slice
-	edges := make([]TopologyEdge, 0, len(edgeMap))
-	for _, edge := range edgeMap {
-		edges = append(edges, edge)
-	}
-
-	return edges, nil
 }
 
 // getSystemName looks up a system name from peer_systems cache
