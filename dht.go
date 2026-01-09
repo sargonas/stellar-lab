@@ -471,10 +471,29 @@ func (dht *DHT) PingNode(sys *System) error {
 		return err
 	}
 
-	_, err = dht.sendRequest(sys.PeerAddress, msg)
+	resp, err := dht.sendRequest(sys.PeerAddress, msg)
 	if err != nil {
 		dht.routingTable.MarkFailed(sys.ID)
 		return err
+	}
+
+	// Check if the responding system matches who we expected
+	if resp.FromSystem != nil && resp.FromSystem.ID != sys.ID {
+		// Different node responded - the address now belongs to someone else
+		log.Printf("UUID mismatch at %s: expected %s (%s), got %s (%s) - removing stale entry",
+			sys.PeerAddress,
+			sys.ID.String()[:8], sys.Name,
+			resp.FromSystem.ID.String()[:8], resp.FromSystem.Name)
+
+		// Remove stale entry from routing table and storage
+		dht.routingTable.Remove(sys.ID)
+		if err := dht.storage.DeletePeerSystem(sys.ID); err != nil {
+			log.Printf("Warning: failed to delete stale peer system %s: %v", sys.ID.String()[:8], err)
+		}
+
+		// Don't return error - address is live, just different owner
+		// sendRequest() already added the responder to our routing table
+		return nil
 	}
 
 	dht.routingTable.MarkVerified(sys.ID)

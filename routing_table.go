@@ -646,6 +646,26 @@ func (rt *RoutingTable) GetCacheSize() int {
 	return len(rt.systemCache)
 }
 
+// Remove completely removes a node from both routing table and cache
+func (rt *RoutingTable) Remove(nodeID uuid.UUID) {
+	// Remove from routing table bucket
+	bucketIdx := rt.BucketIndex(nodeID)
+	bucket := rt.buckets[bucketIdx]
+
+	bucket.mu.Lock()
+	newEntries := make([]*BucketEntry, 0, len(bucket.entries))
+	for _, entry := range bucket.entries {
+		if entry.System.ID != nodeID {
+			newEntries = append(newEntries, entry)
+		}
+	}
+	bucket.entries = newEntries
+	bucket.mu.Unlock()
+
+	// Remove from cache
+	rt.RemoveFromCache(nodeID)
+}
+
 // RemoveFromCache removes a system from the cache
 func (rt *RoutingTable) RemoveFromCache(id uuid.UUID) {
 	rt.cacheMu.Lock()

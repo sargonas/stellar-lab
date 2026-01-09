@@ -545,6 +545,12 @@ func (s *Storage) TouchPeerSystem(systemID uuid.UUID) error {
 	return err
 }
 
+// DeletePeerSystem removes a peer system from the database
+func (s *Storage) DeletePeerSystem(systemID uuid.UUID) error {
+	_, err := s.db.Exec(`DELETE FROM peer_systems WHERE id = ?`, systemID.String())
+	return err
+}
+
 // GetPeerSystem retrieves cached system info for a peer
 func (s *Storage) GetPeerSystem(systemID uuid.UUID) (*System, error) {
 	var sys System
