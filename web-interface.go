@@ -823,6 +823,7 @@ const indexTemplate = `<!DOCTYPE html>
             function onMouseDown(event) {
                 if (!scope.enabled) return;
                 event.preventDefault();
+                markMapInteraction();
                 if (event.button === 0) {
                     state = STATE.ROTATE;
                     rotateStart.set(event.clientX, event.clientY);
@@ -876,6 +877,7 @@ const indexTemplate = `<!DOCTYPE html>
             function onWheel(event) {
                 if (!scope.enabled || !scope.enableZoom) return;
                 event.preventDefault();
+                markMapInteraction();
                 if (event.deltaY < 0) scale *= Math.pow(0.95, scope.zoomSpeed);
                 else if (event.deltaY > 0) scale /= Math.pow(0.95, scope.zoomSpeed);
                 scope.update();
@@ -920,6 +922,18 @@ const indexTemplate = `<!DOCTYPE html>
         // Mutable data that gets refreshed
         let currentKnownSystems = [...knownSystems];
         let currentLivePeerIDs = new Set(livePeerIDs);
+
+        // Track user interaction to avoid disrupting browsing
+        let lastMapInteraction = 0;
+        const MAP_INTERACTION_COOLDOWN = 60000; // Don't refresh map for 60s after interaction
+
+        function markMapInteraction() {
+            lastMapInteraction = Date.now();
+        }
+
+        function isUserBrowsingMap() {
+            return (Date.now() - lastMapInteraction) < MAP_INTERACTION_COOLDOWN;
+        }
 
         async function fetchConnections() {
             try {
@@ -1497,27 +1511,30 @@ const indexTemplate = `<!DOCTYPE html>
                 document.getElementById('stat-galaxy').textContent = totalSystems + ' total';
                 document.getElementById('galaxy-title').textContent = 'Galaxy Map (' + totalSystems + ' systems)';
 
-                // Update live peer IDs set from peers response
-                currentLivePeerIDs = new Set(peers.map(p => p.id));
+                // Only update map data if user isn't actively browsing
+                if (!isUserBrowsingMap()) {
+                    // Update live peer IDs set from peers response
+                    currentLivePeerIDs = new Set(peers.map(p => p.id));
 
-                // Update known systems for map (convert to map format)
-                currentKnownSystems = systems.map(s => ({
-                    id: s.id,
-                    name: s.name,
-                    x: s.x,
-                    y: s.y,
-                    z: s.z,
-                    color: s.stars?.primary?.color || '#ffffff',
-                    starClass: s.stars?.primary?.class || 'M',
-                    starDesc: s.stars?.primary?.description || ''
-                }));
+                    // Update known systems for map (convert to map format)
+                    currentKnownSystems = systems.map(s => ({
+                        id: s.id,
+                        name: s.name,
+                        x: s.x,
+                        y: s.y,
+                        z: s.z,
+                        color: s.stars?.primary?.color || '#ffffff',
+                        starClass: s.stars?.primary?.class || 'M',
+                        starDesc: s.stars?.primary?.description || ''
+                    }));
 
-                // Fetch fresh connections
-                const connectionsResp = await fetch('/api/connections');
-                cachedConnections = await connectionsResp.json() || [];
+                    // Fetch fresh connections
+                    const connectionsResp = await fetch('/api/connections');
+                    cachedConnections = await connectionsResp.json() || [];
 
-                // Rebuild the 3D map with updated data
-                rebuildMapContent();
+                    // Rebuild the 3D map with updated data
+                    rebuildMapContent();
+                }
 
             } catch (err) {
                 console.error('Failed to refresh stats:', err);

@@ -222,7 +222,9 @@ func (rt *RoutingTable) CacheSystem(sys *System, learnedFrom uuid.UUID, verified
 		if shouldUpdate {
 			existing.System = sys
 			existing.LearnedAt = now
-			if verified && rt.storage != nil {
+			// Always persist updates with newer InfoVersion to storage
+			// The storage layer has its own InfoVersion check to prevent stale overwrites
+			if rt.storage != nil {
 				rt.storage.SavePeerSystem(sys)
 			}
 		}
@@ -514,19 +516,4 @@ func (rt *RoutingTable) PruneCache(maxAge time.Duration) int {
 	}
 
 	return pruned
-}
-
-// SaveSnapshot saves the routing table state to storage
-func (rt *RoutingTable) SaveSnapshot() error {
-	if rt.storage == nil {
-		return nil
-	}
-
-	nodes := rt.GetAllRoutingTableNodes()
-	for _, sys := range nodes {
-		if err := rt.storage.SavePeerSystem(sys); err != nil {
-			return err
-		}
-	}
-	return nil
 }
