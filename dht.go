@@ -105,6 +105,39 @@ func (dht *DHT) Stop() {
 	log.Printf("DHT stopped")
 }
 
+// updateRoutingTable adds a node to the routing table using proper Kademlia semantics.
+// If the bucket is full, it pings the least-recently-seen node and handles the result.
+// This implements the core Kademlia principle: "live nodes are never removed."
+func (dht *DHT) updateRoutingTable(sys *System) {
+	if sys == nil {
+		return
+	}
+
+	result := dht.routingTable.Update(sys)
+
+	switch result.Action {
+	case UpdateActionAdded, UpdateActionUpdated, UpdateActionRejected:
+		// Nothing more to do
+		return
+
+	case UpdateActionNeedPingLRS:
+		// Bucket is full - ping the LRS node to see if it's still alive
+		if result.LRSNode == nil || result.LRSNode.PeerAddress == "" {
+			// Can't ping LRS node, add to replacement cache instead
+			dht.routingTable.HandleLRSPingResult(result.BucketIndex, uuid.Nil, result.NewNode, true)
+			return
+		}
+
+		// Ping the LRS node (this is synchronous but fast)
+		err := dht.PingNode(result.LRSNode)
+		alive := err == nil
+
+		// Handle the result - this will either keep LRS and cache new node,
+		// or evict LRS and add new node to bucket
+		dht.routingTable.HandleLRSPingResult(result.BucketIndex, result.LRSNode.ID, result.NewNode, alive)
+	}
+}
+
 // serveHTTP runs the HTTP server on an existing listener
 func (dht *DHT) serveHTTP(listener net.Listener) {
 	mux := http.NewServeMux()
@@ -193,8 +226,8 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to save attestation: %v", err)
 	}
 
-	// Update routing table with sender's info
-	dht.routingTable.Update(msg.FromSystem)
+	// Update routing table with sender's info (proper Kademlia LRS-ping if bucket full)
+	dht.updateRoutingTable(msg.FromSystem)
 
 	// Handle based on message type
 	var response *DHTMessage
@@ -248,6 +281,9 @@ func (dht *DHT) handleFindNode(msg *DHTMessage) (*DHTMessage, error) {
 		return nil, fmt.Errorf("find_node requires target_id")
 	}
 
+	// Mark the sender as verified since they successfully contacted us
+	dht.routingTable.MarkVerified(msg.FromSystem.ID)
+
 	// Only log FIND_NODE at debug level (commented out to reduce noise)
 	// log.Printf("FIND_NODE for %s from %s", msg.TargetID.String()[:8], msg.FromSystem.Name)
 
@@ -274,6 +310,9 @@ func (dht *DHT) handleFindNode(msg *DHTMessage) (*DHTMessage, error) {
 // handleAnnounce processes an announce request
 func (dht *DHT) handleAnnounce(msg *DHTMessage) (*DHTMessage, error) {
 	log.Printf("ANNOUNCE from %s (%s) [v%s]", msg.FromSystem.Name, msg.FromSystem.ID, msg.Version)
+
+	// Mark the sender as verified since they successfully contacted us
+	dht.routingTable.MarkVerified(msg.FromSystem.ID)
 
 	// Cache the announcing system (already done in handleDHTMessage via Update)
 	// Mark as verified since they're actively announcing
@@ -425,16 +464,16 @@ func (dht *DHT) sendRequest(address string, msg *DHTMessage) (*DHTMessage, error
 		return nil, err
 	}
 
-	// Update routing table with responder's info
+	// Update routing table with responder's info (proper Kademlia LRS-ping if bucket full)
 	if response.FromSystem != nil {
-		dht.routingTable.Update(response.FromSystem)
+		dht.updateRoutingTable(response.FromSystem)
 		dht.routingTable.MarkVerified(response.FromSystem.ID)
 	}
 
-	// Cache any systems in the response
+	// Cache any systems in the response and try to add to routing table
 	for _, sys := range response.ClosestNodes {
 		dht.routingTable.CacheSystem(sys, response.FromSystem.ID, false)
-		dht.routingTable.Update(sys)
+		dht.updateRoutingTable(sys)
 	}
 
 	return &response, nil

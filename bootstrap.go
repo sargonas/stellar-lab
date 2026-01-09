@@ -193,8 +193,8 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 
 	log.Printf("  Connected to %s (%s)", sys.Name, sys.ID.String()[:8])
 
-	// Add to routing table
-	dht.routingTable.Update(sys)
+	// Add to routing table (proper Kademlia LRS-ping if bucket full)
+	dht.updateRoutingTable(sys)
 	dht.routingTable.MarkVerified(sys.ID)
 
 	// Query for nodes close to us - now we know who we're talking to
@@ -204,7 +204,7 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 	}
 
 	for _, node := range closest {
-		dht.routingTable.Update(node)
+		dht.updateRoutingTable(node)
 	}
 
 	log.Printf("  Learned about %d nodes", len(closest))
@@ -289,7 +289,7 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 			continue
 		}
 
-		dht.routingTable.Update(fullSys)
+		dht.updateRoutingTable(fullSys)
 		dht.routingTable.MarkVerified(fullSys.ID)
 		connected++
 		log.Printf("    Connected to %s", fullSys.Name)
@@ -298,7 +298,7 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 		closest, err := dht.FindNodeDirectToSystem(fullSys, dht.localSystem.ID)
 		if err == nil {
 			for _, node := range closest {
-				dht.routingTable.Update(node)
+				dht.updateRoutingTable(node)
 			}
 		}
 

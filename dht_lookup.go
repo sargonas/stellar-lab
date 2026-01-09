@@ -109,8 +109,8 @@ func (dht *DHT) FindNode(targetID uuid.UUID) *LookupResult {
 					allNodes[sys.ID] = sys
 					newNodesFound = true
 
-					// Update routing table and cache
-					dht.routingTable.Update(sys)
+					// Update routing table and cache (proper Kademlia LRS-ping if bucket full)
+					dht.updateRoutingTable(sys)
 				}
 			}
 		}
