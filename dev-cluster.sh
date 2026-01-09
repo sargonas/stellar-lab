@@ -8,7 +8,7 @@ CLUSTER_DIR=".dev-cluster"
 NODES=${STELLAR_DEV_NODES:-5}
 BASE_WEB_PORT=8081
 BASE_DHT_PORT=7871
-BINARY="./stellar-mesh"
+BINARY="./stellar-lab"
 
 # Colors for output
 RED='\033[0;31m'
