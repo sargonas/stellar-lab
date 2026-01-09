@@ -7,8 +7,9 @@ A silly program for homelabbers and others to run when you have a few spare megs
 Stellar Lab creates a virtual galaxy where each participant runs a node representing their star system. Systems have procedurally generated identities... star types, binary/trinary compositions, and 3D coordinates... all derived deterministically from cryptographic seeds. Nodes build reputation through cryptographically signed attestations of their interactions with peers.
 
 **Key Properties:**
-- **Guaranteed discovery**: Any node can find any other node in O(log n) hops via DHT (Distributed Hash Table)
-- **Full galaxy awareness**: Every node eventually learns about every other node over time
+- **Immediate discovery**: New nodes get complete galaxy state via full-sync on bootstrap
+- **Full galaxy awareness**: Every node knows about every other node
+- **Simple gossip**: Peers share what they know, no complex routing required
 - **Organic clustering**: New systems spawn near their sponsor system, forming natural clusters
 - **Scalable**: Designed for tens of thousands of nodes but *can* go higher easily
 - **Tamper-resistant**: Identity binding, coordinate validation, and attestation verification prevent common spoofing attacks, though this isn't a blockchain and isn't meant to be one and there may be gaps in my design!
@@ -20,7 +21,7 @@ Stellar Lab creates a virtual galaxy where each participant runs a node represen
 - **Star Classification**: Semi-Realistic distribution (O, B, A, F, G, K, M classes) adjusted for practical network sizes
 - **Peer Capacity**: Star class determines max connections (M-class: 10, scaling up to O-class: 18+)
 - **Spatial Clustering**: New nodes spawn 100-500 units from their sponsor system
-- **DHT Routing**: Kademlia-style k-bucket routing with XOR distance metric
+- **Gossip Network**: Full-visibility peer discovery with verification
 - **Cryptographic Identity**: Ed25519 keypairs for authentication
 - **Attestation System**: Signed proofs of every peer interaction
 - **Stellar Credits**: Earn credits for uptime with bonuses for network contribution
@@ -155,14 +156,22 @@ All settings can be configured via command-line flags or environment variables. 
 
 ## Architecture
 
-### DHT Design
+### Network Discovery
 
-Stellar Lab uses a Kademlia-inspired Distributed Hash Table:
+Stellar Lab uses a simple gossip-based approach for network discovery:
 
-- **128-bit Node IDs**: Derived from system UUIDs via SHA-256
-- **XOR Distance Metric**: Determines "closeness" in the network
-- **K-Buckets**: 128 buckets with capacity varying by star class
-- **Iterative Lookups**: Parallel queries for O(log n) discovery
+1. **Full-Sync Bootstrap**: New nodes request complete galaxy state from their bootstrap peer via `/api/full-sync`. This provides immediate awareness of all verified systems.
+
+2. **Peer Sharing**: Nodes share their known peers with each other via FIND_NODE requests, allowing organic discovery of the full network.
+
+3. **Gossip Validation**: Systems learned via gossip are verified through direct contact before being shared with others, preventing "ghost node" propagation.
+
+### Peer Management
+
+- **Simple Map**: All known peers stored in a single map (no complex routing)
+- **Verification Tracking**: Peers marked as verified after successful direct contact
+- **Version Tracking**: InfoVersion prevents stale gossip from overwriting fresh data
+- **Automatic Cleanup**: Unverified peers pruned after 48h, dead peers evicted after 6 failures
 
 ### Dual-Port Design
 
@@ -170,28 +179,28 @@ Each node runs two HTTP servers:
 - **Web UI** (default :8080): Dashboard and JSON APIs for users
 - **DHT Protocol** (default :7867): Node-to-node communication
 
-### DHT Operations
+### Protocol Operations
 
 | Operation | Description |
 |-----------|-------------|
 | `PING` | Liveness check with system info exchange |
-| `FIND_NODE` | Request K closest nodes to a target ID |
-| `ANNOUNCE` | Register presence with closest nodes |
+| `FIND_NODE` | Request known peers from another node |
+| `ANNOUNCE` | Register presence with known peers |
 
 ### Background Processes
 
 | Process | Interval | Purpose |
 |---------|----------|---------|
-| Announce | 30 min | Re-announce to K closest nodes |
-| Refresh | 60 min | Refresh stale routing buckets |
-| Liveness | 5 min | Ping peers, evict unresponsive nodes |
-| Cache Prune | 6 hours | Remove stale cache entries (>24h) |
+| Announce | 30 min | Re-announce to known peers |
+| Liveness | 5 min | Ping sample of 50 peers, evict unresponsive nodes |
+| Gossip Validation | 10 min | Verify unverified systems learned via gossip |
+| Cache Prune | 2 hours | Remove stale cache entries (>48h unverified) |
 | Compaction | Daily 3 AM | Aggregate old attestations into summaries |
 | Credits | 1 hour | Calculate and award earned credits |
 
 ### Star Types & Peer Capacity
 
-Star class determines maximum routing table connections:
+Star class determines maximum peer connections:
 
 | Class | Type | Distribution | Max Peers |
 |-------|------|--------------|-----------|
@@ -233,6 +242,7 @@ Star class determines maximum routing table connections:
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/discovery` | Bootstrap discovery info |
+| `GET /api/full-sync` | Complete galaxy state (all verified systems) |
 | `POST /dht` | DHT message handler |
 | `GET /system` | System info for peers |
 

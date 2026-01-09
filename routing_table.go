@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/sha256"
 	"log"
-	"math"
 	"sync"
 	"time"
 
@@ -11,70 +9,34 @@ import (
 )
 
 const (
-	// IDBits is the number of bits in a UUID (128 bits)
-	IDBits = 128
-
-	// BaseBucketK is the minimum entries per bucket
-	BaseBucketK = 5
-
-	// DefaultBucketK is used when star class isn't available
-	DefaultBucketK = 8
-
-	// ReplacementCacheSize is how many candidates each bucket's replacement cache holds
-	// Standard Kademlia uses same size as K, but smaller is fine for memory efficiency
-	ReplacementCacheSize = 5
-
-	// SpatialReplacementThreshold - candidate must be this much closer (20%)
-	SpatialReplacementThreshold = 0.8
-
 	// MaxFailCount before a node is considered dead
-	// With 5-min liveness checks, 12 failures = 60 min (double longevity reset threshold)
-	MaxFailCount = 12
+	// With 5-min liveness checks, 6 failures = 30 min
+	MaxFailCount = 6
+
+	// MaxPeers is the maximum number of active peers to maintain
+	// This replaces star-class-based bucket sizing with a simple limit
+	MaxPeers = 50
 )
 
-// BucketEntry represents a node in a k-bucket
-type BucketEntry struct {
-	System       *System   // Full system info
-	LastSeen     time.Time // Last successful contact
-	LastVerified time.Time // Last successful ping response
-	FailCount    int       // Consecutive failures
+// CachedSystem stores full system info with metadata
+type CachedSystem struct {
+	System          *System
+	LearnedAt       time.Time // When we first learned about this system
+	LearnedFrom     uuid.UUID
+	Verified        bool      // Have we directly communicated with them?
+	LastVerified    time.Time // When we last had direct contact (zero if never)
+	LastGossipHeard time.Time // When we last heard about this system via gossip
+	FailCount       int       // Consecutive ping failures
 }
 
-// UpdateAction indicates what happened or what's needed after an Update() call
-type UpdateAction int
-
-const (
-	UpdateActionAdded       UpdateAction = iota // Node was added to bucket
-	UpdateActionUpdated                         // Existing node was updated
-	UpdateActionNeedPingLRS                     // Bucket full, need to ping LRS node first
-	UpdateActionRejected                        // Rejected (nil system, is self, etc.)
-)
-
-// UpdateResult contains the outcome of an Update() call
-type UpdateResult struct {
-	Action      UpdateAction
-	LRSNode     *System // If Action is NeedPingLRS, this is the node to ping
-	NewNode     *System // The node we're trying to add (needed for HandleLRSPingResult)
-	BucketIndex int     // The bucket this affects
-}
-
-// KBucket holds nodes at a specific XOR distance range
-type KBucket struct {
-	entries          []*BucketEntry
-	replacementCache []*BucketEntry // Candidates waiting for bucket slots (proper Kademlia)
-	lastAccess       time.Time
-	mu               sync.RWMutex
-}
-
-// RoutingTable manages k-buckets for DHT routing
+// RoutingTable manages known peers for the DHT
+// Simplified from Kademlia k-buckets to a simple map since we want full visibility
 type RoutingTable struct {
 	localID     uuid.UUID
 	localSystem *System
-	buckets     [IDBits]*KBucket
-	bucketK     int // Max entries per bucket (derived from star class)
 	mu          sync.RWMutex
 
-	// System cache - all known systems (not just routing table)
+	// All known systems - this IS the peer database
 	systemCache map[uuid.UUID]*CachedSystem
 	cacheMu     sync.RWMutex
 
@@ -82,33 +44,13 @@ type RoutingTable struct {
 	storage *Storage
 }
 
-// CachedSystem stores full system info with metadata
-type CachedSystem struct {
-	System         *System
-	LearnedAt      time.Time // When we first learned about this system (or got authoritative update)
-	LearnedFrom    uuid.UUID
-	Verified       bool      // Have we directly communicated with them?
-	LastVerified   time.Time // When we last had direct contact (zero if never)
-	LastGossipHeard time.Time // When we last heard about this system via gossip (resets prune timer)
-}
-
 // NewRoutingTable creates a new routing table for the local node
 func NewRoutingTable(localSystem *System, storage *Storage) *RoutingTable {
 	rt := &RoutingTable{
 		localID:     localSystem.ID,
 		localSystem: localSystem,
-		bucketK:     calculateBucketK(localSystem),
 		systemCache: make(map[uuid.UUID]*CachedSystem),
 		storage:     storage,
-	}
-
-	// Initialize all buckets
-	for i := 0; i < IDBits; i++ {
-		rt.buckets[i] = &KBucket{
-			entries:          make([]*BucketEntry, 0, rt.bucketK),
-			replacementCache: make([]*BucketEntry, 0, ReplacementCacheSize),
-			lastAccess:       time.Now(),
-		}
 	}
 
 	// Load cached systems from storage
@@ -117,526 +59,120 @@ func NewRoutingTable(localSystem *System, storage *Storage) *RoutingTable {
 	return rt
 }
 
-// calculateBucketK determines bucket capacity based on star class
-func calculateBucketK(sys *System) int {
-	if sys == nil {
-		return DefaultBucketK
-	}
-	maxPeers := sys.GetMaxPeers()
-	// Half of MaxPeers gives good bucket capacity while leaving room for churn
-	// Ensures at least BaseBucketK
-	k := maxPeers / 2
-	if k < BaseBucketK {
-		k = BaseBucketK
-	}
-	return k
-}
-
-// XORDistance calculates the XOR distance between two UUIDs
-func XORDistance(a, b uuid.UUID) [16]byte {
-	var result [16]byte
-	for i := 0; i < 16; i++ {
-		result[i] = a[i] ^ b[i]
-	}
-	return result
-}
-
-// XORDistanceLeadingZeros returns the number of leading zero bits in XOR distance
-// This determines which bucket a node belongs to
-func XORDistanceLeadingZeros(a, b uuid.UUID) int {
-	for i := 0; i < 16; i++ {
-		xor := a[i] ^ b[i]
-		if xor == 0 {
-			continue
-		}
-		// Count leading zeros in this byte
-		for j := 7; j >= 0; j-- {
-			if xor&(1<<j) != 0 {
-				return i*8 + (7 - j)
-			}
-		}
-	}
-	return 128 // Identical UUIDs
-}
-
-// BucketIndex returns the bucket index for a given node ID
-// Bucket 0 = most distant (first bit differs), Bucket 127 = closest
-func (rt *RoutingTable) BucketIndex(nodeID uuid.UUID) int {
-	leadingZeros := XORDistanceLeadingZeros(rt.localID, nodeID)
-	if leadingZeros >= IDBits {
-		return IDBits - 1 // Same ID (shouldn't happen)
-	}
-	return leadingZeros
-}
-
-// CompareXORDistance returns -1 if a is closer to target, 1 if b is closer, 0 if equal
-func CompareXORDistance(target, a, b uuid.UUID) int {
-	distA := XORDistance(target, a)
-	distB := XORDistance(target, b)
-
-	for i := 0; i < 16; i++ {
-		if distA[i] < distB[i] {
-			return -1
-		}
-		if distA[i] > distB[i] {
-			return 1
-		}
-	}
-	return 0
-}
-
-// Update adds or updates a node in the routing table using proper Kademlia semantics.
-// Returns an UpdateResult indicating what happened or what action is needed.
-//
-// Kademlia behavior:
-// - If node exists in bucket → update it
-// - If bucket has space → add node
-// - If bucket is full → return NeedPingLRS with the least-recently-seen node
-//   The caller should ping the LRS node and call HandleLRSPingResult with the outcome.
-func (rt *RoutingTable) Update(sys *System) UpdateResult {
+// Update adds or updates a node - simplified from Kademlia to just cache it
+func (rt *RoutingTable) Update(sys *System) {
 	if sys == nil || sys.ID == rt.localID {
-		return UpdateResult{Action: UpdateActionRejected}
-	}
-
-	// Always cache the system info (CacheSystem handles version checking)
-	rt.CacheSystem(sys, uuid.Nil, false)
-
-	bucketIdx := rt.BucketIndex(sys.ID)
-	bucket := rt.buckets[bucketIdx]
-
-	bucket.mu.Lock()
-	defer bucket.mu.Unlock()
-
-	bucket.lastAccess = time.Now()
-
-	// Check if already in bucket
-	for i, entry := range bucket.entries {
-		if entry.System.ID == sys.ID {
-			// Check InfoVersion before updating routing table entry
-			if sys.InfoVersion > 0 && entry.System.InfoVersion > 0 {
-				if sys.InfoVersion <= entry.System.InfoVersion {
-					// Stale info - don't update routing table entry
-					return UpdateResult{Action: UpdateActionUpdated, BucketIndex: bucketIdx}
-				}
-			} else if sys.InfoVersion == 0 && entry.System.InfoVersion > 0 {
-				// Incoming is old protocol, we have versioned - keep ours
-				return UpdateResult{Action: UpdateActionUpdated, BucketIndex: bucketIdx}
-			}
-
-			// Update existing entry's system info but preserve FailCount
-			bucket.entries[i].System = sys
-			bucket.entries[i].LastSeen = time.Now()
-			return UpdateResult{Action: UpdateActionUpdated, BucketIndex: bucketIdx}
-		}
-	}
-
-	// Also check if in replacement cache - update there too
-	for i, entry := range bucket.replacementCache {
-		if entry.System.ID == sys.ID {
-			bucket.replacementCache[i].System = sys
-			bucket.replacementCache[i].LastSeen = time.Now()
-			return UpdateResult{Action: UpdateActionUpdated, BucketIndex: bucketIdx}
-		}
-	}
-
-	// Not in bucket or replacement cache - try to add
-	newEntry := &BucketEntry{
-		System:    sys,
-		LastSeen:  time.Now(),
-		FailCount: 0,
-	}
-
-	if len(bucket.entries) < rt.bucketK {
-		// Bucket has space - add directly
-		bucket.entries = append(bucket.entries, newEntry)
-		return UpdateResult{Action: UpdateActionAdded, BucketIndex: bucketIdx}
-	}
-
-	// Bucket full - first check for dead nodes to replace immediately
-	for i, entry := range bucket.entries {
-		if entry.FailCount >= MaxFailCount {
-			// Dead node found - replace it and promote from replacement cache if available
-			bucket.entries[i] = newEntry
-			return UpdateResult{Action: UpdateActionAdded, BucketIndex: bucketIdx}
-		}
-	}
-
-	// No dead nodes - find LRS (least-recently-seen) node for Kademlia ping check
-	lrsIdx := 0
-	lrsTime := bucket.entries[0].LastSeen
-	for i, entry := range bucket.entries {
-		if entry.LastSeen.Before(lrsTime) {
-			lrsIdx = i
-			lrsTime = entry.LastSeen
-		}
-	}
-
-	// Return NeedPingLRS - caller should ping LRS node and call HandleLRSPingResult
-	return UpdateResult{
-		Action:      UpdateActionNeedPingLRS,
-		LRSNode:     bucket.entries[lrsIdx].System,
-		NewNode:     sys,
-		BucketIndex: bucketIdx,
-	}
-}
-
-// HandleLRSPingResult processes the result of pinging a LRS node during bucket-full scenario.
-// This implements the core Kademlia "live nodes are never removed" principle:
-// - If LRS responded (alive=true) → keep LRS, add new node to replacement cache
-// - If LRS failed (alive=false) → evict LRS, add new node to bucket
-func (rt *RoutingTable) HandleLRSPingResult(bucketIdx int, lrsNodeID uuid.UUID, newNode *System, alive bool) {
-	if bucketIdx < 0 || bucketIdx >= IDBits || newNode == nil {
 		return
 	}
-
-	bucket := rt.buckets[bucketIdx]
-	bucket.mu.Lock()
-	defer bucket.mu.Unlock()
-
-	newEntry := &BucketEntry{
-		System:    newNode,
-		LastSeen:  time.Now(),
-		FailCount: 0,
-	}
-
-	if alive {
-		// LRS node is alive - keep it, add new node to replacement cache
-		// First update LRS node's LastSeen since it just responded
-		for i, entry := range bucket.entries {
-			if entry.System.ID == lrsNodeID {
-				bucket.entries[i].LastSeen = time.Now()
-				bucket.entries[i].FailCount = 0
-				break
-			}
-		}
-
-		// Add to replacement cache (if not already there and cache has room)
-		for _, entry := range bucket.replacementCache {
-			if entry.System.ID == newNode.ID {
-				return // Already in replacement cache
-			}
-		}
-
-		if len(bucket.replacementCache) < ReplacementCacheSize {
-			bucket.replacementCache = append(bucket.replacementCache, newEntry)
-		} else {
-			// Replacement cache full - replace oldest entry
-			oldestIdx := 0
-			oldestTime := bucket.replacementCache[0].LastSeen
-			for i, entry := range bucket.replacementCache {
-				if entry.LastSeen.Before(oldestTime) {
-					oldestIdx = i
-					oldestTime = entry.LastSeen
-				}
-			}
-			bucket.replacementCache[oldestIdx] = newEntry
-		}
-	} else {
-		// LRS node is dead - evict it, add new node to bucket
-		for i, entry := range bucket.entries {
-			if entry.System.ID == lrsNodeID {
-				bucket.entries[i] = newEntry
-				return
-			}
-		}
-	}
-}
-
-// shouldReplaceSpatially checks if we should replace a node based on spatial proximity
-func (rt *RoutingTable) shouldReplaceSpatially(bucket *KBucket, candidate *BucketEntry) bool {
-	if rt.localSystem == nil || candidate.System == nil {
-		return false
-	}
-
-	localCoords := Point3D{rt.localSystem.X, rt.localSystem.Y, rt.localSystem.Z}
-	candidateDist := localCoords.DistanceTo(Point3D{
-		candidate.System.X, candidate.System.Y, candidate.System.Z,
-	})
-
-	// Find the spatially furthest node
-	var furthestIdx int = -1
-	var furthestDist float64 = 0
-
-	for i, entry := range bucket.entries {
-		if entry.System == nil {
-			continue
-		}
-		dist := localCoords.DistanceTo(Point3D{
-			entry.System.X, entry.System.Y, entry.System.Z,
-		})
-		if dist > furthestDist {
-			furthestDist = dist
-			furthestIdx = i
-		}
-	}
-
-	// Replace if candidate is significantly closer
-	if furthestIdx >= 0 && candidateDist < furthestDist*SpatialReplacementThreshold {
-		bucket.entries[furthestIdx] = candidate
-		return true
-	}
-
-	return false
-}
-
-// Point3D represents 3D coordinates
-type Point3D struct {
-	X, Y, Z float64
-}
-
-// DistanceTo calculates Euclidean distance to another point
-func (p Point3D) DistanceTo(other Point3D) float64 {
-	dx := p.X - other.X
-	dy := p.Y - other.Y
-	dz := p.Z - other.Z
-	return math.Sqrt(dx*dx + dy*dy + dz*dz)
+	// Just cache the system - no bucket logic needed
+	rt.CacheSystem(sys, uuid.Nil, false)
 }
 
 // MarkFailed increments the fail count for a node
 func (rt *RoutingTable) MarkFailed(nodeID uuid.UUID) {
-	bucketIdx := rt.BucketIndex(nodeID)
-	bucket := rt.buckets[bucketIdx]
+	rt.cacheMu.Lock()
+	defer rt.cacheMu.Unlock()
 
-	bucket.mu.Lock()
-	defer bucket.mu.Unlock()
-
-	for i, entry := range bucket.entries {
-		if entry.System.ID == nodeID {
-			bucket.entries[i].FailCount++
-			return
-		}
+	if cached, ok := rt.systemCache[nodeID]; ok {
+		cached.FailCount++
 	}
 }
 
 // MarkVerified marks a node as successfully verified (ping response received)
 func (rt *RoutingTable) MarkVerified(nodeID uuid.UUID) {
 	now := time.Now()
-	bucketIdx := rt.BucketIndex(nodeID)
-	bucket := rt.buckets[bucketIdx]
 
-	bucket.mu.Lock()
-	defer bucket.mu.Unlock()
-
-	for i, entry := range bucket.entries {
-		if entry.System.ID == nodeID {
-			bucket.entries[i].LastVerified = now
-			bucket.entries[i].LastSeen = now
-			bucket.entries[i].FailCount = 0
-			// Also update storage timestamp
-			if rt.storage != nil {
-				rt.storage.TouchPeerSystem(nodeID)
-			}
-			return
-		}
-	}
-
-	// Also mark in cache and update LastVerified
 	rt.cacheMu.Lock()
 	if cached, ok := rt.systemCache[nodeID]; ok {
 		cached.Verified = true
 		cached.LastVerified = now
-		cached.LearnedAt = now // Also refresh LearnedAt since we have fresh contact
-		// Also update storage timestamp
-		if rt.storage != nil {
-			rt.storage.TouchPeerSystem(nodeID)
-		}
+		cached.LastGossipHeard = now
+		cached.FailCount = 0
 	}
 	rt.cacheMu.Unlock()
+
+	// Update storage timestamp
+	if rt.storage != nil {
+		rt.storage.TouchPeerSystem(nodeID)
+	}
 }
 
-// EvictDeadNodes removes nodes with too many failures from routing table
-// and promotes candidates from the replacement cache to fill the gaps.
+// EvictDeadNodes removes nodes with too many failures
 func (rt *RoutingTable) EvictDeadNodes() int {
+	rt.cacheMu.Lock()
+	defer rt.cacheMu.Unlock()
+
 	evicted := 0
-	for _, bucket := range rt.buckets {
-		bucket.mu.Lock()
-
-		// Count how many we're evicting
-		evictCount := 0
-		newEntries := make([]*BucketEntry, 0, len(bucket.entries))
-		for _, entry := range bucket.entries {
-			if entry.FailCount < MaxFailCount {
-				newEntries = append(newEntries, entry)
-			} else {
-				evictCount++
-			}
+	for id, cached := range rt.systemCache {
+		if cached.FailCount >= MaxFailCount {
+			delete(rt.systemCache, id)
+			evicted++
 		}
-		evicted += evictCount
-
-		// Promote from replacement cache to fill gaps
-		for evictCount > 0 && len(bucket.replacementCache) > 0 {
-			// Pop the most recently seen entry from replacement cache
-			bestIdx := 0
-			bestTime := bucket.replacementCache[0].LastSeen
-			for i, entry := range bucket.replacementCache {
-				if entry.LastSeen.After(bestTime) {
-					bestIdx = i
-					bestTime = entry.LastSeen
-				}
-			}
-
-			// Promote to bucket
-			newEntries = append(newEntries, bucket.replacementCache[bestIdx])
-
-			// Remove from replacement cache
-			bucket.replacementCache = append(
-				bucket.replacementCache[:bestIdx],
-				bucket.replacementCache[bestIdx+1:]...,
-			)
-			evictCount--
-		}
-
-		bucket.entries = newEntries
-		bucket.mu.Unlock()
 	}
 	return evicted
 }
 
-// GetClosest returns the K closest nodes to a target ID
-func (rt *RoutingTable) GetClosest(targetID uuid.UUID, count int) []*System {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-
-	// Collect all entries from all buckets (routing table entries are always "live")
-	var allEntries []*BucketEntry
-	for _, bucket := range rt.buckets {
-		bucket.mu.RLock()
-		allEntries = append(allEntries, bucket.entries...)
-		bucket.mu.RUnlock()
-	}
-
-	// Also include recently-verified cached systems not in routing table
-	// Only include systems verified within the last 24 hours to prevent ghost propagation
+// GetAllPeers returns all verified peers (replaces GetClosest for FIND_NODE)
+// Limited to maxCount to avoid overwhelming responses
+func (rt *RoutingTable) GetAllPeers(maxCount int) []*System {
 	rt.cacheMu.RLock()
-	seenIDs := make(map[uuid.UUID]bool)
-	for _, entry := range allEntries {
-		seenIDs[entry.System.ID] = true
-	}
-	verificationCutoff := time.Now().Add(-24 * time.Hour)
-	for id, cached := range rt.systemCache {
-		if !seenIDs[id] && cached.Verified && 
-		   !cached.LastVerified.IsZero() && cached.LastVerified.After(verificationCutoff) {
-			allEntries = append(allEntries, &BucketEntry{
-				System:   cached.System,
-				LastSeen: cached.LearnedAt,
-			})
+	defer rt.cacheMu.RUnlock()
+
+	result := make([]*System, 0, maxCount)
+	verificationCutoff := time.Now().Add(-VerificationCutoff)
+
+	for _, cached := range rt.systemCache {
+		if len(result) >= maxCount {
+			break
 		}
-	}
-	rt.cacheMu.RUnlock()
-
-	// Sort by XOR distance to target
-	sortByXORDistance(allEntries, targetID)
-
-	// Return top 'count' systems
-	result := make([]*System, 0, count)
-	for i := 0; i < len(allEntries) && i < count; i++ {
-		if allEntries[i].System != nil {
-			result = append(result, allEntries[i].System)
+		// Only return verified peers with recent verification
+		if cached.Verified && !cached.LastVerified.IsZero() &&
+			cached.LastVerified.After(verificationCutoff) &&
+			cached.FailCount < MaxFailCount {
+			result = append(result, cached.System)
 		}
 	}
 
 	return result
 }
 
-// sortByXORDistance sorts entries by XOR distance to target (in place)
-func sortByXORDistance(entries []*BucketEntry, target uuid.UUID) {
-	// Simple insertion sort (good for small lists)
-	for i := 1; i < len(entries); i++ {
-		j := i
-		for j > 0 && CompareXORDistance(target, entries[j].System.ID, entries[j-1].System.ID) < 0 {
-			entries[j], entries[j-1] = entries[j-1], entries[j]
-			j--
-		}
-	}
+// GetClosest is now just an alias for GetAllPeers (no XOR distance sorting)
+// Kept for compatibility with existing code
+func (rt *RoutingTable) GetClosest(targetID uuid.UUID, count int) []*System {
+	// In a full-visibility network, we just return verified peers
+	// XOR distance is not meaningful when everyone knows everyone
+	return rt.GetAllPeers(count)
 }
 
-// GetBucketNodes returns all nodes in a specific bucket
-func (rt *RoutingTable) GetBucketNodes(bucketIdx int) []*System {
-	if bucketIdx < 0 || bucketIdx >= IDBits {
-		return nil
-	}
-
-	bucket := rt.buckets[bucketIdx]
-	bucket.mu.RLock()
-	defer bucket.mu.RUnlock()
-
-	result := make([]*System, 0, len(bucket.entries))
-	for _, entry := range bucket.entries {
-		if entry.System != nil {
-			result = append(result, entry.System)
-		}
-	}
-	return result
-}
-
-// RandomIDInBucket generates a random ID that would fall in the specified bucket
-func (rt *RoutingTable) RandomIDInBucket(bucketIdx int) uuid.UUID {
-	// Create ID that shares first 'bucketIdx' bits with local ID, then differs
-	result := rt.localID
-
-	// Flip the bit at position bucketIdx
-	byteIdx := bucketIdx / 8
-	bitIdx := 7 - (bucketIdx % 8)
-
-	result[byteIdx] ^= (1 << bitIdx)
-
-	// Randomize remaining bits
-	hash := sha256.Sum256(append(result[:], byte(time.Now().UnixNano())))
-	for i := byteIdx + 1; i < 16; i++ {
-		result[i] = hash[i]
-	}
-
-	return result
-}
-
-// GetAllRoutingTableNodes returns all nodes currently in the routing table
+// GetAllRoutingTableNodes returns all active (verified, not dead) peers
 func (rt *RoutingTable) GetAllRoutingTableNodes() []*System {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
+	rt.cacheMu.RLock()
+	defer rt.cacheMu.RUnlock()
 
-	var result []*System
-	for _, bucket := range rt.buckets {
-		bucket.mu.RLock()
-		for _, entry := range bucket.entries {
-			if entry.System != nil {
-				result = append(result, entry.System)
-			}
+	verificationCutoff := time.Now().Add(-VerificationCutoff)
+	result := make([]*System, 0)
+
+	for _, cached := range rt.systemCache {
+		// "Active peer" = verified recently and not failing
+		if cached.Verified && !cached.LastVerified.IsZero() &&
+			cached.LastVerified.After(verificationCutoff) &&
+			cached.FailCount < MaxFailCount {
+			result = append(result, cached.System)
 		}
-		bucket.mu.RUnlock()
 	}
 	return result
 }
 
-// GetRoutingTableSize returns the total number of nodes in the routing table
+// GetRoutingTableSize returns the count of active peers
 func (rt *RoutingTable) GetRoutingTableSize() int {
-	count := 0
-	for _, bucket := range rt.buckets {
-		bucket.mu.RLock()
-		count += len(bucket.entries)
-		bucket.mu.RUnlock()
-	}
-	return count
-}
-
-// BucketLastAccess returns when a bucket was last accessed
-func (rt *RoutingTable) BucketLastAccess(bucketIdx int) time.Time {
-	if bucketIdx < 0 || bucketIdx >= IDBits {
-		return time.Time{}
-	}
-	rt.buckets[bucketIdx].mu.RLock()
-	defer rt.buckets[bucketIdx].mu.RUnlock()
-	return rt.buckets[bucketIdx].lastAccess
+	return len(rt.GetAllRoutingTableNodes())
 }
 
 // === System Cache Methods ===
 
 // CacheSystem adds a system to the cache
-// InfoVersion is used to prevent stale gossip from overwriting fresh info:
-// - If incoming version > cached version → update system info
-// - If incoming version <= cached version → ignore system info (stale)
-// - If incoming version == 0 (old protocol) → special handling
-// LastVerified is ONLY updated on verified direct contact
-// LastGossipHeard is updated on ANY mention (gossip or direct) to track peer activity
+// InfoVersion is used to prevent stale gossip from overwriting fresh info
+// LastGossipHeard is updated conditionally to prevent dead nodes from persisting
 func (rt *RoutingTable) CacheSystem(sys *System, learnedFrom uuid.UUID, verified bool) {
 	if sys == nil || sys.ID == rt.localID {
 		return
@@ -649,40 +185,43 @@ func (rt *RoutingTable) CacheSystem(sys *System, learnedFrom uuid.UUID, verified
 	existing, exists := rt.systemCache[sys.ID]
 
 	if exists {
-		// Always update LastGossipHeard - any mention resets the prune timer
-		existing.LastGossipHeard = now
-
 		// Update LastVerified on direct contact regardless of version
 		if verified {
 			existing.LastVerified = now
 			existing.Verified = true
-			// Update DB's last_verified timestamp
+			existing.LastGossipHeard = now
+			existing.FailCount = 0
 			if rt.storage != nil {
 				rt.storage.TouchPeerSystem(sys.ID)
+			}
+		} else {
+			// For gossip-only updates: only extend the prune timer if:
+			// 1. The system was verified within the cutoff, OR
+			// 2. The system has a newer InfoVersion
+			staleCutoff := now.Add(-VerificationCutoff)
+			hasRecentVerification := existing.Verified && existing.LastVerified.After(staleCutoff)
+			hasNewerVersion := sys.InfoVersion > 0 && sys.InfoVersion > existing.System.InfoVersion
+
+			if hasRecentVerification || hasNewerVersion {
+				existing.LastGossipHeard = now
 			}
 		}
 
 		// Check InfoVersion to decide whether to update system info
 		shouldUpdate := false
-
 		if sys.InfoVersion > 0 && existing.System.InfoVersion > 0 {
-			// Both have versions - only accept if incoming is newer
 			shouldUpdate = sys.InfoVersion > existing.System.InfoVersion
 		} else if sys.InfoVersion == 0 && existing.System.InfoVersion > 0 {
-			// Incoming is legacy (0), we have versioned - keep ours
 			shouldUpdate = false
 		} else if sys.InfoVersion > 0 && existing.System.InfoVersion == 0 {
-			// Incoming has version, ours is legacy - accept upgrade
 			shouldUpdate = true
 		} else {
-			// Both are legacy (0) - accept if verified, otherwise keep existing
 			shouldUpdate = verified
 		}
 
 		if shouldUpdate {
 			existing.System = sys
 			existing.LearnedAt = now
-			// Save updated info to DB if verified
 			if verified && rt.storage != nil {
 				rt.storage.SavePeerSystem(sys)
 			}
@@ -694,7 +233,8 @@ func (rt *RoutingTable) CacheSystem(sys *System, learnedFrom uuid.UUID, verified
 			LearnedAt:       now,
 			LearnedFrom:     learnedFrom,
 			Verified:        verified,
-			LastGossipHeard: now, // First mention counts as gossip
+			LastGossipHeard: now,
+			FailCount:       0,
 		}
 		if verified {
 			cached.LastVerified = now
@@ -722,34 +262,27 @@ func (rt *RoutingTable) GetCachedSystem(id uuid.UUID) *System {
 	return nil
 }
 
-// GetSystemIDByAddress looks up a system's UUID by its peer address
-// Returns uuid.Nil if the address is not known
-func (rt *RoutingTable) GetSystemIDByAddress(address string) uuid.UUID {
-	// First check routing table
-	rt.mu.RLock()
-	for _, bucket := range rt.buckets {
-		bucket.mu.RLock()
-		for _, entry := range bucket.entries {
-			if entry.System.PeerAddress == address {
-				id := entry.System.ID
-				bucket.mu.RUnlock()
-				rt.mu.RUnlock()
-				return id
-			}
-		}
-		bucket.mu.RUnlock()
-	}
-	rt.mu.RUnlock()
-
-	// Then check cache
+// GetCachedSystemMeta returns the full cache metadata for a system
+func (rt *RoutingTable) GetCachedSystemMeta(id uuid.UUID) *CachedSystem {
 	rt.cacheMu.RLock()
 	defer rt.cacheMu.RUnlock()
+
+	if cached, ok := rt.systemCache[id]; ok {
+		return cached
+	}
+	return nil
+}
+
+// GetSystemIDByAddress looks up a system's UUID by its peer address
+func (rt *RoutingTable) GetSystemIDByAddress(address string) uuid.UUID {
+	rt.cacheMu.RLock()
+	defer rt.cacheMu.RUnlock()
+
 	for _, cached := range rt.systemCache {
 		if cached.System.PeerAddress == address {
 			return cached.System.ID
 		}
 	}
-
 	return uuid.Nil
 }
 
@@ -766,8 +299,6 @@ func (rt *RoutingTable) GetAllCachedSystems() []*System {
 }
 
 // GetVerifiedCachedSystems returns only systems verified within maxAge
-// Used for FIND_NODE responses - only share peers we've actually talked to recently
-// This breaks the ghost propagation loop by not sharing stale/unverified peers
 func (rt *RoutingTable) GetVerifiedCachedSystems(maxAge time.Duration) []*System {
 	rt.cacheMu.RLock()
 	defer rt.cacheMu.RUnlock()
@@ -775,7 +306,6 @@ func (rt *RoutingTable) GetVerifiedCachedSystems(maxAge time.Duration) []*System
 	cutoff := time.Now().Add(-maxAge)
 	result := make([]*System, 0)
 	for _, cached := range rt.systemCache {
-		// Only include if verified AND LastVerified is recent
 		if cached.Verified && !cached.LastVerified.IsZero() && cached.LastVerified.After(cutoff) {
 			result = append(result, cached.System)
 		}
@@ -784,12 +314,10 @@ func (rt *RoutingTable) GetVerifiedCachedSystems(maxAge time.Duration) []*System
 }
 
 // GetUnverifiedCachedSystems returns unverified systems sorted by LastGossipHeard (oldest first)
-// Used by the gossip validation loop to prioritize peers that haven't been mentioned recently
 func (rt *RoutingTable) GetUnverifiedCachedSystems() []*System {
 	rt.cacheMu.RLock()
 	defer rt.cacheMu.RUnlock()
 
-	// Collect unverified systems with their gossip timestamps
 	type unverifiedEntry struct {
 		system     *System
 		lastGossip time.Time
@@ -805,7 +333,7 @@ func (rt *RoutingTable) GetUnverifiedCachedSystems() []*System {
 		}
 	}
 
-	// Sort by LastGossipHeard ascending (oldest first - prioritize stale gossip)
+	// Sort by LastGossipHeard ascending (oldest first)
 	for i := 1; i < len(entries); i++ {
 		j := i
 		for j > 0 && entries[j].lastGossip.Before(entries[j-1].lastGossip) {
@@ -814,7 +342,6 @@ func (rt *RoutingTable) GetUnverifiedCachedSystems() []*System {
 		}
 	}
 
-	// Extract just the systems
 	result := make([]*System, len(entries))
 	for i, entry := range entries {
 		result[i] = entry.system
@@ -843,23 +370,8 @@ func (rt *RoutingTable) GetCacheSize() int {
 	return len(rt.systemCache)
 }
 
-// Remove completely removes a node from both routing table and cache
+// Remove completely removes a node from the cache
 func (rt *RoutingTable) Remove(nodeID uuid.UUID) {
-	// Remove from routing table bucket
-	bucketIdx := rt.BucketIndex(nodeID)
-	bucket := rt.buckets[bucketIdx]
-
-	bucket.mu.Lock()
-	newEntries := make([]*BucketEntry, 0, len(bucket.entries))
-	for _, entry := range bucket.entries {
-		if entry.System.ID != nodeID {
-			newEntries = append(newEntries, entry)
-		}
-	}
-	bucket.entries = newEntries
-	bucket.mu.Unlock()
-
-	// Remove from cache
 	rt.RemoveFromCache(nodeID)
 }
 
@@ -876,59 +388,70 @@ func (rt *RoutingTable) loadFromStorage() {
 		return
 	}
 
-	systems, err := rt.storage.GetAllPeerSystems()
+	systemsWithMeta, err := rt.storage.GetAllPeerSystemsWithMeta()
 	if err != nil {
 		log.Printf("Failed to load peer systems from storage: %v", err)
 		return
 	}
 
-	log.Printf("Loading %d cached systems from storage", len(systems))
+	log.Printf("Loading %d cached systems from storage", len(systemsWithMeta))
 
 	now := time.Now()
-	for _, sys := range systems {
+	maxAge := 48 * time.Hour
+	ageCutoff := now.Add(-maxAge)
+
+	loaded := 0
+	skipped := 0
+	for _, meta := range systemsWithMeta {
+		sys := meta.System
 		if sys.ID == rt.localID {
 			continue
 		}
 
-		// Add to cache directly (avoiding CacheSystem to prevent redundant DB write)
+		var lastVerified time.Time
+		var lastGossipHeard time.Time
+		verified := false
+
+		if meta.LastVerified > 0 {
+			lastVerified = time.Unix(meta.LastVerified, 0)
+			verified = true
+		}
+
+		if meta.UpdatedAt > 0 {
+			lastGossipHeard = time.Unix(meta.UpdatedAt, 0)
+		} else if verified {
+			lastGossipHeard = lastVerified
+		} else {
+			lastGossipHeard = ageCutoff
+		}
+
+		// Skip systems that are too old
+		if lastGossipHeard.Before(ageCutoff) && !verified {
+			skipped++
+			continue
+		}
+
 		rt.cacheMu.Lock()
 		rt.systemCache[sys.ID] = &CachedSystem{
 			System:          sys,
-			LearnedAt:       now,
-			Verified:        false,
-			LastGossipHeard: now, // Treat storage load as fresh gossip to give them a chance
+			LearnedAt:       lastGossipHeard,
+			Verified:        verified,
+			LastVerified:    lastVerified,
+			LastGossipHeard: lastGossipHeard,
+			FailCount:       0,
 		}
 		rt.cacheMu.Unlock()
+		loaded++
+	}
 
-		// Try to add to routing table (Update will skip CacheSystem since already cached)
-		bucketIdx := rt.BucketIndex(sys.ID)
-		bucket := rt.buckets[bucketIdx]
-
-		bucket.mu.Lock()
-		// Check if already in bucket
-		found := false
-		for _, entry := range bucket.entries {
-			if entry.System.ID == sys.ID {
-				found = true
-				break
-			}
-		}
-		if !found && len(bucket.entries) < rt.bucketK {
-			bucket.entries = append(bucket.entries, &BucketEntry{
-				System:    sys,
-				LastSeen:  now,
-				FailCount: 0,
-			})
-		}
-		bucket.mu.Unlock()
+	if skipped > 0 {
+		log.Printf("  Loaded %d systems, skipped %d stale unverified systems", loaded, skipped)
+	} else {
+		log.Printf("  Loaded %d systems", loaded)
 	}
 }
 
 // PruneCache removes stale entries from the cache
-// - Verified systems: pruned if LastVerified > maxAge (no recent direct contact)
-// - Unverified systems: pruned if LastGossipHeard > maxAge (no one has mentioned them)
-// The maxAge for unverified systems should be long enough to allow the validation loop
-// to cycle through all unverified peers at least once before pruning them.
 func (rt *RoutingTable) PruneCache(maxAge time.Duration) int {
 	rt.cacheMu.Lock()
 	defer rt.cacheMu.Unlock()
@@ -937,18 +460,10 @@ func (rt *RoutingTable) PruneCache(maxAge time.Duration) int {
 	pruned := 0
 
 	for id, cached := range rt.systemCache {
-		// Don't prune systems currently in the routing table (active peers)
-		if rt.isInRoutingTable(id) {
-			continue
-		}
-
 		shouldPrune := false
 		if cached.Verified && !cached.LastVerified.IsZero() {
-			// Verified system: prune based on LastVerified
 			shouldPrune = cached.LastVerified.Before(cutoff)
 		} else {
-			// Unverified system: prune based on LastGossipHeard
-			// If no one has mentioned them in maxAge, they're likely dead
 			shouldPrune = cached.LastGossipHeard.Before(cutoff)
 		}
 
@@ -960,24 +475,6 @@ func (rt *RoutingTable) PruneCache(maxAge time.Duration) int {
 
 	return pruned
 }
-
-// isInRoutingTable checks if a node is in the routing table (must hold cacheMu)
-func (rt *RoutingTable) isInRoutingTable(id uuid.UUID) bool {
-	bucketIdx := rt.BucketIndex(id)
-	bucket := rt.buckets[bucketIdx]
-
-	bucket.mu.RLock()
-	defer bucket.mu.RUnlock()
-
-	for _, entry := range bucket.entries {
-		if entry.System.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-// === Persistence ===
 
 // SaveSnapshot saves the routing table state to storage
 func (rt *RoutingTable) SaveSnapshot() error {

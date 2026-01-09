@@ -20,7 +20,7 @@ const (
 	Alpha = 3
 
 	// K is the default number of nodes to return in FIND_NODE
-	K = 5
+	K = 20
 
 	// RequestTimeout is how long to wait for a DHT response
 	RequestTimeout = 5 * time.Second
@@ -28,14 +28,15 @@ const (
 	// AnnounceInterval is how often to re-announce ourselves
 	AnnounceInterval = 30 * time.Minute
 
-	// RefreshInterval is how often to refresh stale buckets
-	RefreshInterval = 60 * time.Minute
-
 	// CachePruneInterval is how often to prune stale cache entries
-	CachePruneInterval = 6 * time.Hour
+	CachePruneInterval = 2 * time.Hour
 
 	// CacheMaxAge is how long to keep systems that haven't been seen
 	CacheMaxAge = 48 * time.Hour
+
+	// VerificationCutoff is how long before a system is considered "stale" for full-sync
+	// Extended from 24h to 36h to avoid missing alive-but-quiet nodes
+	VerificationCutoff = 36 * time.Hour
 )
 
 // DHT is the main coordinator for distributed hash table operations
@@ -89,9 +90,9 @@ func (dht *DHT) Start() error {
 	// Start maintenance loops
 	dht.wg.Add(5)
 	go dht.announceLoop()
-	go dht.refreshLoop()
 	go dht.cacheMaintenanceLoop()
 	go dht.peerLivenessLoop()
+	go dht.gossipValidationLoop()
 	go dht.creditCalculationLoop()
 
 	log.Printf("DHT started for %s (%s)", dht.localSystem.Name, dht.localSystem.ID)
@@ -105,37 +106,13 @@ func (dht *DHT) Stop() {
 	log.Printf("DHT stopped")
 }
 
-// updateRoutingTable adds a node to the routing table using proper Kademlia semantics.
-// If the bucket is full, it pings the least-recently-seen node and handles the result.
-// This implements the core Kademlia principle: "live nodes are never removed."
+// updateRoutingTable adds a node to the peer cache
+// Simplified from Kademlia - we just cache all peers we hear about
 func (dht *DHT) updateRoutingTable(sys *System) {
 	if sys == nil {
 		return
 	}
-
-	result := dht.routingTable.Update(sys)
-
-	switch result.Action {
-	case UpdateActionAdded, UpdateActionUpdated, UpdateActionRejected:
-		// Nothing more to do
-		return
-
-	case UpdateActionNeedPingLRS:
-		// Bucket is full - ping the LRS node to see if it's still alive
-		if result.LRSNode == nil || result.LRSNode.PeerAddress == "" {
-			// Can't ping LRS node, add to replacement cache instead
-			dht.routingTable.HandleLRSPingResult(result.BucketIndex, uuid.Nil, result.NewNode, true)
-			return
-		}
-
-		// Ping the LRS node (this is synchronous but fast)
-		err := dht.PingNode(result.LRSNode)
-		alive := err == nil
-
-		// Handle the result - this will either keep LRS and cache new node,
-		// or evict LRS and add new node to bucket
-		dht.routingTable.HandleLRSPingResult(result.BucketIndex, result.LRSNode.ID, result.NewNode, alive)
-	}
+	dht.routingTable.Update(sys)
 }
 
 // serveHTTP runs the HTTP server on an existing listener
@@ -144,6 +121,7 @@ func (dht *DHT) serveHTTP(listener net.Listener) {
 	mux.HandleFunc("/dht", dht.handleDHTMessage)
 	mux.HandleFunc("/system", dht.handleSystemInfo)
 	mux.HandleFunc("/api/discovery", dht.handleDiscoveryInfo)
+	mux.HandleFunc("/api/full-sync", dht.handleFullSync)
 
 	log.Printf("DHT listening on %s", dht.listenAddr)
 	if err := http.Serve(listener, mux); err != nil {
@@ -409,6 +387,120 @@ func (dht *DHT) handleDiscoveryInfo(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(systems)
+}
+
+// FullSyncSystem represents a system in the full-sync response
+type FullSyncSystem struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	X           float64 `json:"x"`
+	Y           float64 `json:"y"`
+	Z           float64 `json:"z"`
+	PeerAddress string  `json:"peer_address"`
+	StarClass   string  `json:"star_class"`
+	InfoVersion int64   `json:"info_version"`
+	LastSeen    int64   `json:"last_seen"` // Unix timestamp, 0 if never directly seen
+}
+
+// FullSyncResponse is the response from /api/full-sync
+type FullSyncResponse struct {
+	ProtocolVersion string           `json:"protocol_version"`
+	Timestamp       int64            `json:"timestamp"`
+	LocalSystem     FullSyncSystem   `json:"local_system"`
+	Systems         []FullSyncSystem `json:"systems"`
+	TotalCount      int              `json:"total_count"`
+}
+
+// handleFullSync returns ALL known systems for complete galaxy sync
+// This endpoint enables new nodes to learn about the entire network in one request
+// rather than iteratively discovering nodes through Kademlia lookups.
+func (dht *DHT) handleFullSync(w http.ResponseWriter, r *http.Request) {
+	// Build list of all known systems
+	systems := []FullSyncSystem{}
+	seenIDs := make(map[uuid.UUID]bool)
+
+	// Add ourselves
+	seenIDs[dht.localSystem.ID] = true
+
+	// Cutoff for "recently verified" - only share systems we've actually talked to
+	// within the cutoff period to prevent spreading stale/dead node info
+	verificationCutoff := time.Now().Add(-VerificationCutoff)
+
+	// Add routing table nodes first (these are actively maintained)
+	for _, sys := range dht.routingTable.GetAllRoutingTableNodes() {
+		if seenIDs[sys.ID] {
+			continue
+		}
+		seenIDs[sys.ID] = true
+
+		systems = append(systems, FullSyncSystem{
+			ID:          sys.ID.String(),
+			Name:        sys.Name,
+			X:           sys.X,
+			Y:           sys.Y,
+			Z:           sys.Z,
+			PeerAddress: sys.PeerAddress,
+			StarClass:   sys.Stars.Primary.Class,
+			InfoVersion: sys.InfoVersion,
+			LastSeen:    time.Now().Unix(), // Routing table nodes are actively maintained
+		})
+	}
+
+	// Add cached systems ONLY if they've been verified recently
+	// This prevents spreading stale gossip about dead nodes
+	for _, sys := range dht.routingTable.GetAllCachedSystems() {
+		if seenIDs[sys.ID] {
+			continue
+		}
+
+		// Get cache metadata to check verification status
+		cached := dht.routingTable.GetCachedSystemMeta(sys.ID)
+		if cached == nil {
+			continue
+		}
+
+		// Only include verified systems with recent verification
+		if !cached.Verified || cached.LastVerified.IsZero() || cached.LastVerified.Before(verificationCutoff) {
+			continue // Skip unverified or stale systems
+		}
+
+		seenIDs[sys.ID] = true
+
+		systems = append(systems, FullSyncSystem{
+			ID:          sys.ID.String(),
+			Name:        sys.Name,
+			X:           sys.X,
+			Y:           sys.Y,
+			Z:           sys.Z,
+			PeerAddress: sys.PeerAddress,
+			StarClass:   sys.Stars.Primary.Class,
+			InfoVersion: sys.InfoVersion,
+			LastSeen:    cached.LastVerified.Unix(),
+		})
+	}
+
+	response := FullSyncResponse{
+		ProtocolVersion: CurrentProtocolVersion.String(),
+		Timestamp:       time.Now().Unix(),
+		LocalSystem: FullSyncSystem{
+			ID:          dht.localSystem.ID.String(),
+			Name:        dht.localSystem.Name,
+			X:           dht.localSystem.X,
+			Y:           dht.localSystem.Y,
+			Z:           dht.localSystem.Z,
+			PeerAddress: dht.localSystem.PeerAddress,
+			StarClass:   dht.localSystem.Stars.Primary.Class,
+			InfoVersion: dht.localSystem.InfoVersion,
+			LastSeen:    time.Now().Unix(),
+		},
+		Systems:    systems,
+		TotalCount: len(systems) + 1, // +1 for local system
+	}
+
+	log.Printf("FULL-SYNC: returning %d verified systems to %s", response.TotalCount, r.RemoteAddr)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // === Outbound Operations ===
