@@ -363,6 +363,46 @@ func (rt *RoutingTable) GetUnverifiedCount() int {
 	return count
 }
 
+// PeerStateBreakdown provides a clear view of peer states
+type PeerStateBreakdown struct {
+	Total    int `json:"total"`    // All known systems (not including self)
+	Active   int `json:"active"`   // Verified, recent, responding (fail=0)
+	Degraded int `json:"degraded"` // Verified but failing (0 < fail < max)
+	Pending  int `json:"pending"`  // Heard via gossip, not yet verified
+	Stale    int `json:"stale"`    // Was verified but outside cutoff window
+}
+
+// GetPeerStateBreakdown returns counts of peers in each state
+func (rt *RoutingTable) GetPeerStateBreakdown() PeerStateBreakdown {
+	rt.cacheMu.RLock()
+	defer rt.cacheMu.RUnlock()
+
+	now := time.Now()
+	cutoff := now.Add(-VerificationCutoff)
+
+	breakdown := PeerStateBreakdown{
+		Total: len(rt.systemCache),
+	}
+
+	for _, cached := range rt.systemCache {
+		if !cached.Verified {
+			// Never verified - pending
+			breakdown.Pending++
+		} else if cached.LastVerified.IsZero() || cached.LastVerified.Before(cutoff) {
+			// Verified but too long ago - stale
+			breakdown.Stale++
+		} else if cached.FailCount > 0 {
+			// Recently verified but now failing - degraded
+			breakdown.Degraded++
+		} else {
+			// Verified, recent, responding - active
+			breakdown.Active++
+		}
+	}
+
+	return breakdown
+}
+
 // GetCacheSize returns the number of cached systems
 func (rt *RoutingTable) GetCacheSize() int {
 	rt.cacheMu.RLock()
