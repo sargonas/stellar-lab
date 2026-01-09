@@ -93,7 +93,7 @@ STELLAR_PUBLIC_ADDRESS: "your-domain.com:7868"
 
 ### Prerequisites
 
-- Go 1.18+
+- Go 1.21+
 - GCC (for SQLite CGO)
   - **macOS**: `xcode-select --install`
   - **Linux**: `sudo apt-get install build-essential`
@@ -195,7 +195,6 @@ Each node runs two HTTP servers:
 | Liveness | 5 min | Ping sample of 50 peers, evict unresponsive nodes |
 | Gossip Validation | 10 min | Verify unverified systems learned via gossip |
 | Cache Prune | 2 hours | Remove stale cache entries (>48h unverified) |
-| Compaction | Daily 3 AM | Aggregate old attestations into summaries |
 | Credits | 1 hour | Calculate and award earned credits |
 
 ### Star Types & Peer Capacity
