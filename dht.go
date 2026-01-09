@@ -487,7 +487,9 @@ func (dht *DHT) PingNode(sys *System) error {
 
 		// Remove stale entry from routing table and storage
 		dht.routingTable.Remove(sys.ID)
-		dht.storage.DeletePeerSystem(sys.ID)
+		if err := dht.storage.DeletePeerSystem(sys.ID); err != nil {
+			log.Printf("Warning: failed to delete stale peer system %s: %v", sys.ID.String()[:8], err)
+		}
 
 		// Don't return error - address is live, just different owner
 		// sendRequest() already added the responder to our routing table
