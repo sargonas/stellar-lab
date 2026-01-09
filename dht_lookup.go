@@ -17,8 +17,8 @@ type LookupResult struct {
 	Duration     time.Duration
 }
 
-// FindNode performs an iterative lookup for the K closest nodes to a target ID
-// This is the core DHT lookup algorithm (Kademlia-style)
+// FindNode performs an iterative lookup to discover peers and find a target ID
+// Simplified from Kademlia - we query peers to learn about more peers
 func (dht *DHT) FindNode(targetID uuid.UUID) *LookupResult {
 	startTime := time.Now()
 	result := &LookupResult{
@@ -109,7 +109,7 @@ func (dht *DHT) FindNode(targetID uuid.UUID) *LookupResult {
 					allNodes[sys.ID] = sys
 					newNodesFound = true
 
-					// Update routing table and cache (proper Kademlia LRS-ping if bucket full)
+					// Cache this peer
 					dht.updateRoutingTable(sys)
 				}
 			}
@@ -209,22 +209,13 @@ func selectUnqueried(nodes []*System, queried map[uuid.UUID]bool, count int) []*
 	return result
 }
 
-// sortByDistance returns all nodes sorted by XOR distance to target
+// sortByDistance returns all nodes (no longer sorted by XOR distance since we want full visibility)
 func sortByDistance(nodes map[uuid.UUID]*System, target uuid.UUID) []*System {
 	result := make([]*System, 0, len(nodes))
 	for _, sys := range nodes {
 		result = append(result, sys)
 	}
-
-	// Sort by XOR distance
-	for i := 1; i < len(result); i++ {
-		j := i
-		for j > 0 && CompareXORDistance(target, result[j].ID, result[j-1].ID) < 0 {
-			result[j], result[j-1] = result[j-1], result[j]
-			j--
-		}
-	}
-
+	// No sorting needed - in full-visibility mode, all peers are equally useful
 	return result
 }
 

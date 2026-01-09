@@ -3,8 +3,17 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"strings"
 	"time"
+)
+
+const (
+	// LivenessSampleSize is the max number of peers to check per liveness cycle
+	// At 5-min intervals, this keeps network overhead reasonable at any scale
+	// With 50 peers/cycle, a 20K node network takes ~33 hours to fully cycle
+	// But organic contact (announces, FIND_NODE) provides additional verification
+	LivenessSampleSize = 50
 )
 
 // announceLoop periodically announces our presence to the network
@@ -49,15 +58,29 @@ func (dht *DHT) peerLivenessLoop() {
 	}
 }
 
-// checkPeerLiveness pings all routing table peers to verify they're alive
-// and announces ourselves to them
+// checkPeerLiveness pings a sample of peers to verify they're alive
+// Uses sampling to scale to large networks (20K+ nodes)
+// Organic contact (announces, FIND_NODE responses) provides additional verification
 func (dht *DHT) checkPeerLiveness() {
-	nodes := dht.routingTable.GetAllRoutingTableNodes()
-	if len(nodes) == 0 {
+	allNodes := dht.routingTable.GetAllRoutingTableNodes()
+	if len(allNodes) == 0 {
 		return
 	}
 
-	log.Printf("Checking liveness of %d peers...", len(nodes))
+	// Sample peers if we have more than LivenessSampleSize
+	var nodes []*System
+	if len(allNodes) <= LivenessSampleSize {
+		nodes = allNodes
+	} else {
+		// Random sample without replacement
+		nodes = make([]*System, LivenessSampleSize)
+		perm := rand.Perm(len(allNodes))
+		for i := 0; i < LivenessSampleSize; i++ {
+			nodes[i] = allNodes[perm[i]]
+		}
+	}
+
+	log.Printf("Checking liveness of %d peers (of %d total)...", len(nodes), len(allNodes))
 
 	alive := 0
 	dead := 0
@@ -116,56 +139,6 @@ func (dht *DHT) announceToNetwork() {
 	log.Printf("Announced to %d nodes", announced)
 }
 
-// refreshLoop periodically refreshes stale buckets
-func (dht *DHT) refreshLoop() {
-	defer dht.wg.Done()
-
-	// Initial refresh after bootstrap
-	time.Sleep(30 * time.Second)
-
-	ticker := time.NewTicker(RefreshInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-dht.shutdown:
-			return
-		case <-ticker.C:
-			dht.refreshStaleBuckets()
-		}
-	}
-}
-
-// refreshStaleBuckets refreshes buckets that haven't been accessed recently
-func (dht *DHT) refreshStaleBuckets() {
-	log.Printf("Checking for stale buckets to refresh...")
-
-	refreshed := 0
-	for i := 0; i < IDBits; i++ {
-		lastAccess := dht.routingTable.BucketLastAccess(i)
-
-		// Skip empty buckets (lastAccess will be very recent from initialization)
-		nodes := dht.routingTable.GetBucketNodes(i)
-		if len(nodes) == 0 {
-			continue
-		}
-
-		// Check if bucket is stale
-		if time.Since(lastAccess) > RefreshInterval {
-			// Generate random ID in this bucket's range and lookup
-			randomID := dht.routingTable.RandomIDInBucket(i)
-			log.Printf("  Refreshing bucket %d with lookup for %s", i, randomID.String()[:8])
-
-			dht.FindNode(randomID)
-			refreshed++
-		}
-	}
-
-	if refreshed > 0 {
-		log.Printf("Refreshed %d stale buckets", refreshed)
-	}
-}
-
 // cacheMaintenanceLoop periodically prunes the system cache
 func (dht *DHT) cacheMaintenanceLoop() {
 	defer dht.wg.Done()
@@ -180,6 +153,84 @@ func (dht *DHT) cacheMaintenanceLoop() {
 		case <-ticker.C:
 			dht.pruneCache()
 		}
+	}
+}
+
+// gossipValidationLoop periodically verifies systems learned via gossip
+// This prevents "ghost" systems from persisting - systems that were mentioned
+// in gossip but are actually dead or never existed.
+func (dht *DHT) gossipValidationLoop() {
+	defer dht.wg.Done()
+
+	// Wait for initial bootstrap before validating
+	time.Sleep(2 * time.Minute)
+
+	// Run every 10 minutes - validate a batch of unverified systems
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-dht.shutdown:
+			return
+		case <-ticker.C:
+			dht.validateGossipSystems()
+		}
+	}
+}
+
+// validateGossipSystems attempts to verify systems that were learned via gossip
+// but never directly contacted. This closes the loop on gossip propagation.
+func (dht *DHT) validateGossipSystems() {
+	unverified := dht.routingTable.GetUnverifiedCachedSystems()
+	if len(unverified) == 0 {
+		return
+	}
+
+	// Validate up to 10 systems per cycle to avoid flooding
+	maxValidate := 10
+	if len(unverified) < maxValidate {
+		maxValidate = len(unverified)
+	}
+
+	log.Printf("Validating %d of %d unverified gossip systems...", maxValidate, len(unverified))
+
+	verified := 0
+	removed := 0
+
+	for i := 0; i < maxValidate; i++ {
+		sys := unverified[i]
+		if sys.PeerAddress == "" {
+			// Can't verify without address - remove from cache
+			dht.routingTable.RemoveFromCache(sys.ID)
+			removed++
+			continue
+		}
+
+		// Try to ping the system directly
+		_, err := dht.Ping(sys.PeerAddress)
+		if err != nil {
+			// Failed to contact - check if this is the expected system
+			// The Ping function already handles UUID mismatches
+			// For now, just mark that we tried (fail count is tracked elsewhere)
+			log.Printf("  %s (%s): unreachable - %v", sys.Name, sys.ID.String()[:8], err)
+
+			// If we've never verified this system and it's unreachable,
+			// remove it from cache to prevent ghost propagation
+			cached := dht.routingTable.GetCachedSystemMeta(sys.ID)
+			if cached != nil && cached.LastVerified.IsZero() {
+				// Never verified at all - likely a ghost, remove it
+				dht.routingTable.RemoveFromCache(sys.ID)
+				removed++
+			}
+		} else {
+			verified++
+			log.Printf("  %s: verified", sys.Name)
+		}
+	}
+
+	if verified > 0 || removed > 0 {
+		log.Printf("Gossip validation: %d verified, %d removed as ghosts", verified, removed)
 	}
 }
 
@@ -208,52 +259,20 @@ func (dht *DHT) pruneCache() {
 	}
 }
 
-// verifyRoutingTableNodes periodically pings nodes in the routing table
-// to verify they're still alive
-func (dht *DHT) verifyRoutingTableNodes() {
-	nodes := dht.routingTable.GetAllRoutingTableNodes()
-	log.Printf("Verifying %d nodes in routing table...", len(nodes))
-
-	verified := 0
-	failed := 0
-
-	for _, sys := range nodes {
-		if sys.PeerAddress == "" {
-			continue
-		}
-
-		if err := dht.PingNode(sys); err != nil {
-			log.Printf("  %s (%s) - FAILED: %v", sys.Name, sys.ID.String()[:8], err)
-			failed++
-		} else {
-			verified++
-		}
-	}
-
-	log.Printf("Verification complete: %d verified, %d failed", verified, failed)
-}
-
 // GetNetworkStats returns statistics about the DHT network
 func (dht *DHT) GetNetworkStats() map[string]interface{} {
 	rtSize := dht.routingTable.GetRoutingTableSize()
 	cacheSize := dht.routingTable.GetCacheSize()
-
-	// Count active buckets
-	activeBuckets := 0
-	for i := 0; i < IDBits; i++ {
-		if len(dht.routingTable.GetBucketNodes(i)) > 0 {
-			activeBuckets++
-		}
-	}
+	unverifiedCount := dht.routingTable.GetUnverifiedCount()
 
 	return map[string]interface{}{
 		"local_id":           dht.localSystem.ID.String(),
 		"local_name":         dht.localSystem.Name,
 		"routing_table_size": rtSize,
 		"cache_size":         cacheSize,
-		"active_buckets":     activeBuckets,
-		"bucket_k":           dht.routingTable.bucketK,
-		"max_peers":          dht.localSystem.GetMaxPeers(),
+		"verified_peers":     rtSize,
+		"unverified_peers":   unverifiedCount,
+		"max_peers":          MaxPeers,
 	}
 }
 
