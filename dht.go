@@ -51,6 +51,12 @@ type DHT struct {
 	pendingRequests map[string]chan *DHTMessage
 	pendingMu       sync.RWMutex
 
+	// Inbound connection tracking (for outbound-only detection)
+	startTime           time.Time
+	hasReceivedInbound  bool
+	inboundMu           sync.RWMutex
+	lastInboundWarning  time.Time
+
 	// Shutdown coordination
 	shutdown chan struct{}
 	wg       sync.WaitGroup
@@ -64,6 +70,7 @@ func NewDHT(localSystem *System, storage *Storage, listenAddr string) *DHT {
 		listenAddr:      listenAddr,
 		pendingRequests: make(map[string]chan *DHTMessage),
 		shutdown:        make(chan struct{}),
+		startTime:       time.Now(),
 		httpClient: &http.Client{
 			Timeout: RequestTimeout,
 		},
@@ -104,6 +111,43 @@ func (dht *DHT) Stop() {
 	close(dht.shutdown)
 	dht.wg.Wait()
 	log.Printf("DHT stopped")
+}
+
+// markInboundReceived records that we've received an inbound connection
+func (dht *DHT) markInboundReceived() {
+	dht.inboundMu.Lock()
+	dht.hasReceivedInbound = true
+	dht.inboundMu.Unlock()
+}
+
+// checkInboundStatus logs a warning if no inbound connections after startup period
+func (dht *DHT) checkInboundStatus() {
+	dht.inboundMu.RLock()
+	hasInbound := dht.hasReceivedInbound
+	lastWarning := dht.lastInboundWarning
+	dht.inboundMu.RUnlock()
+
+	if hasInbound {
+		return
+	}
+
+	// Only warn after 10 minutes of uptime
+	if time.Since(dht.startTime) < 10*time.Minute {
+		return
+	}
+
+	// Repeat warning every 6 hours
+	if !lastWarning.IsZero() && time.Since(lastWarning) < 6*time.Hour {
+		return
+	}
+
+	dht.inboundMu.Lock()
+	dht.lastInboundWarning = time.Now()
+	dht.inboundMu.Unlock()
+
+	log.Printf("WARNING: No inbound connections received after 10 minutes.")
+	log.Printf("  Your node may be in outbound-only mode (can see network but others can't reach you).")
+	log.Printf("  Check that port %s is open and forwarded correctly, as UPnP may have failed.", dht.listenAddr)
 }
 
 // updateRoutingTable adds a node to the peer cache
@@ -217,6 +261,9 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+
+	// Mark that we've received an inbound request (not a response)
+	dht.markInboundReceived()
 
 	switch msg.Type {
 	case MessageTypePing:

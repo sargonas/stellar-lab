@@ -54,6 +54,7 @@ func (dht *DHT) peerLivenessLoop() {
 			return
 		case <-ticker.C:
 			dht.checkPeerLiveness()
+			dht.checkInboundStatus()
 		}
 	}
 }
