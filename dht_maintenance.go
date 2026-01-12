@@ -54,6 +54,7 @@ func (dht *DHT) peerLivenessLoop() {
 			return
 		case <-ticker.C:
 			dht.checkPeerLiveness()
+			dht.checkInboundStatus()
 		}
 	}
 }
@@ -208,7 +209,7 @@ func (dht *DHT) validateGossipSystems() {
 		}
 
 		// Try to ping the system directly
-		_, err := dht.Ping(sys.PeerAddress)
+		respSystem, err := dht.Ping(sys.PeerAddress)
 		if err != nil {
 			// Failed to contact - check if this is the expected system
 			// The Ping function already handles UUID mismatches
@@ -223,6 +224,16 @@ func (dht *DHT) validateGossipSystems() {
 				dht.routingTable.RemoveFromCache(sys.ID)
 				removed++
 			}
+		} else if respSystem != nil && respSystem.ID != sys.ID {
+			// UUID mismatch - a different system now lives at this address
+			// The gossip entry is stale, remove it
+			log.Printf("  %s (%s): UUID mismatch - address now belongs to %s (%s), removing stale entry",
+				sys.Name, sys.ID.String()[:8], respSystem.Name, respSystem.ID.String()[:8])
+			dht.routingTable.RemoveFromCache(sys.ID)
+			if err := dht.storage.DeletePeerSystem(sys.ID); err != nil {
+				log.Printf("Warning: failed to delete stale peer system %s: %v", sys.ID.String()[:8], err)
+			}
+			removed++
 		} else {
 			verified++
 			log.Printf("  %s: verified", sys.Name)
