@@ -39,6 +39,271 @@ const (
 	VerificationCutoff = 36 * time.Hour
 )
 
+// DHT Message Types
+const (
+	MessageTypePing     = "ping"
+	MessageTypeFindNode = "find_node"
+	MessageTypeAnnounce = "announce"
+)
+
+// Error codes
+const (
+	ErrCodeInvalidMessage     = 400
+	ErrCodeMissingAttestation = 401
+	ErrCodeInvalidAttestation = 402
+	ErrCodeIncompatibleVersion = 403
+	ErrCodeInternalError      = 500
+)
+
+// DHTMessage is the unified message format for all DHT operations
+type DHTMessage struct {
+	Type         string       `json:"type"`                    // "ping", "find_node", "announce"
+	Version      string       `json:"version"`                 // Protocol version (e.g., "1.0.0")
+	FromSystem   *System      `json:"from_system"`             // Sender's full system info (always included)
+	TargetID     *uuid.UUID   `json:"target_id,omitempty"`     // For find_node: the ID we're looking for
+	ClosestNodes []*System    `json:"closest_nodes,omitempty"` // For find_node response: K closest nodes
+	Attestation  *Attestation `json:"attestation"`             // Cryptographic proof (required)
+	Timestamp    time.Time    `json:"timestamp"`
+	IsResponse   bool         `json:"is_response"`          // True if this is a response to a request
+	RequestID    string       `json:"request_id,omitempty"` // Correlates requests with responses
+}
+
+// DHTError represents an error response
+type DHTError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// Error implements the error interface for DHTError
+func (e *DHTError) Error() string {
+	return e.Message
+}
+
+// Custom errors
+var (
+	ErrNoKeys = &DHTError{Code: ErrCodeInternalError, Message: "no cryptographic keys available"}
+)
+
+// NewPingRequest creates a new ping request message
+// toSystemID should be the recipient's UUID if known, or uuid.Nil for first contact
+func NewPingRequest(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
+	if fromSystem.Keys == nil {
+		return nil, ErrNoKeys
+	}
+
+	attestation := SignAttestation(
+		fromSystem.ID,
+		toSystemID,
+		"dht_ping",
+		fromSystem.Keys.PrivateKey,
+		fromSystem.Keys.PublicKey,
+	)
+
+	return &DHTMessage{
+		Type:        MessageTypePing,
+		Version:     CurrentProtocolVersion.String(),
+		FromSystem:  fromSystem,
+		Attestation: attestation,
+		Timestamp:   time.Now(),
+		IsResponse:  false,
+		RequestID:   requestID,
+	}, nil
+}
+
+// NewPingResponse creates a ping response message
+// toSystemID should be the original requester's UUID
+func NewPingResponse(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
+	if fromSystem.Keys == nil {
+		return nil, ErrNoKeys
+	}
+
+	attestation := SignAttestation(
+		fromSystem.ID,
+		toSystemID,
+		"dht_ping_response",
+		fromSystem.Keys.PrivateKey,
+		fromSystem.Keys.PublicKey,
+	)
+
+	return &DHTMessage{
+		Type:        MessageTypePing,
+		Version:     CurrentProtocolVersion.String(),
+		FromSystem:  fromSystem,
+		Attestation: attestation,
+		Timestamp:   time.Now(),
+		IsResponse:  true,
+		RequestID:   requestID,
+	}, nil
+}
+
+// NewFindNodeRequest creates a new find_node request message
+// toSystemID should be the recipient's UUID if known, or uuid.Nil for first contact
+func NewFindNodeRequest(fromSystem *System, toSystemID uuid.UUID, targetID uuid.UUID, requestID string) (*DHTMessage, error) {
+	if fromSystem.Keys == nil {
+		return nil, ErrNoKeys
+	}
+
+	attestation := SignAttestation(
+		fromSystem.ID,
+		toSystemID,
+		"dht_find_node",
+		fromSystem.Keys.PrivateKey,
+		fromSystem.Keys.PublicKey,
+	)
+
+	return &DHTMessage{
+		Type:        MessageTypeFindNode,
+		Version:     CurrentProtocolVersion.String(),
+		FromSystem:  fromSystem,
+		TargetID:    &targetID,
+		Attestation: attestation,
+		Timestamp:   time.Now(),
+		IsResponse:  false,
+		RequestID:   requestID,
+	}, nil
+}
+
+// NewFindNodeResponse creates a find_node response with closest nodes
+// toSystemID should be the original requester's UUID
+func NewFindNodeResponse(fromSystem *System, toSystemID uuid.UUID, closestNodes []*System, requestID string) (*DHTMessage, error) {
+	if fromSystem.Keys == nil {
+		return nil, ErrNoKeys
+	}
+
+	attestation := SignAttestation(
+		fromSystem.ID,
+		toSystemID,
+		"dht_find_node_response",
+		fromSystem.Keys.PrivateKey,
+		fromSystem.Keys.PublicKey,
+	)
+
+	return &DHTMessage{
+		Type:         MessageTypeFindNode,
+		Version:      CurrentProtocolVersion.String(),
+		FromSystem:   fromSystem,
+		ClosestNodes: closestNodes,
+		Attestation:  attestation,
+		Timestamp:    time.Now(),
+		IsResponse:   true,
+		RequestID:    requestID,
+	}, nil
+}
+
+// NewAnnounceRequest creates an announce request (node advertising itself)
+// toSystemID should be the recipient's UUID if known, or uuid.Nil for first contact
+func NewAnnounceRequest(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
+	if fromSystem.Keys == nil {
+		return nil, ErrNoKeys
+	}
+
+	attestation := SignAttestation(
+		fromSystem.ID,
+		toSystemID,
+		"dht_announce",
+		fromSystem.Keys.PrivateKey,
+		fromSystem.Keys.PublicKey,
+	)
+
+	return &DHTMessage{
+		Type:        MessageTypeAnnounce,
+		Version:     CurrentProtocolVersion.String(),
+		FromSystem:  fromSystem,
+		Attestation: attestation,
+		Timestamp:   time.Now(),
+		IsResponse:  false,
+		RequestID:   requestID,
+	}, nil
+}
+
+// NewAnnounceResponse creates an announce response
+// toSystemID should be the original requester's UUID
+func NewAnnounceResponse(fromSystem *System, toSystemID uuid.UUID, requestID string) (*DHTMessage, error) {
+	if fromSystem.Keys == nil {
+		return nil, ErrNoKeys
+	}
+
+	attestation := SignAttestation(
+		fromSystem.ID,
+		toSystemID,
+		"dht_announce_response",
+		fromSystem.Keys.PrivateKey,
+		fromSystem.Keys.PublicKey,
+	)
+
+	return &DHTMessage{
+		Type:        MessageTypeAnnounce,
+		Version:     CurrentProtocolVersion.String(),
+		FromSystem:  fromSystem,
+		Attestation: attestation,
+		Timestamp:   time.Now(),
+		IsResponse:  true,
+		RequestID:   requestID,
+	}, nil
+}
+
+// Validate checks if a DHT message is valid
+func (msg *DHTMessage) Validate() error {
+	if msg.FromSystem == nil {
+		return &DHTError{Code: ErrCodeInvalidMessage, Message: "missing from_system"}
+	}
+
+	if msg.Attestation == nil {
+		return &DHTError{Code: ErrCodeMissingAttestation, Message: "missing attestation"}
+	}
+
+	if !msg.Attestation.Verify() {
+		return &DHTError{Code: ErrCodeInvalidAttestation, Message: "invalid attestation signature"}
+	}
+
+	if msg.Attestation.FromSystemID != msg.FromSystem.ID {
+		return &DHTError{Code: ErrCodeInvalidAttestation, Message: "attestation sender mismatch"}
+	}
+
+	if !msg.Attestation.IsTimestampValid(5 * time.Minute) {
+		return &DHTError{Code: ErrCodeInvalidAttestation, Message: "attestation timestamp out of range"}
+	}
+
+	if len(msg.FromSystem.Name) > 64 {
+		return &DHTError{Code: ErrCodeInvalidMessage, Message: "system name too long"}
+	}
+
+	// Verify star configuration matches what the UUID should produce
+	if !ValidateStarSystem(msg.FromSystem) {
+		return &DHTError{Code: ErrCodeInvalidMessage, Message: "star system configuration invalid for UUID"}
+	}
+
+	switch msg.Type {
+	case MessageTypePing:
+		// No additional validation needed
+	case MessageTypeFindNode:
+		if !msg.IsResponse && msg.TargetID == nil {
+			return &DHTError{Code: ErrCodeInvalidMessage, Message: "find_node request requires target_id"}
+		}
+	case MessageTypeAnnounce:
+		// No additional validation needed
+	default:
+		return &DHTError{Code: ErrCodeInvalidMessage, Message: "unknown message type: " + msg.Type}
+	}
+
+	return nil
+}
+
+// HasTargetedAttestation returns true if the attestation includes a specific recipient
+// (ToSystemID is not uuid.Nil). This indicates the sender is using protocol v1.6.0+
+func (msg *DHTMessage) HasTargetedAttestation() bool {
+	return msg.Attestation != nil && msg.Attestation.ToSystemID != uuid.Nil
+}
+
+// LookupResult contains the result of a DHT lookup
+type LookupResult struct {
+	Target       uuid.UUID
+	ClosestNodes []*System
+	Found        *System // Non-nil if exact target was found
+	Hops         int
+	Duration     time.Duration
+}
+
 // DHT is the main coordinator for distributed hash table operations
 type DHT struct {
 	localSystem  *System
@@ -763,4 +1028,240 @@ func (dht *DHT) GetLocalSystem() *System {
 // GetStorage returns the storage
 func (dht *DHT) GetStorage() *Storage {
 	return dht.storage
+}
+
+// === DHT Lookup Operations ===
+
+// queryResponse holds the result of querying a single node
+type queryResponse struct {
+	nodeID uuid.UUID
+	nodes  []*System
+	err    error
+}
+
+// FindNode performs an iterative lookup to discover peers and find a target ID
+// Simplified from Kademlia - we query peers to learn about more peers
+func (dht *DHT) FindNode(targetID uuid.UUID) *LookupResult {
+	startTime := time.Now()
+	result := &LookupResult{
+		Target: targetID,
+	}
+
+	// Check if we have the target cached
+	if cached := dht.routingTable.GetCachedSystem(targetID); cached != nil {
+		result.Found = cached
+		result.ClosestNodes = []*System{cached}
+		result.Duration = time.Since(startTime)
+		return result
+	}
+
+	// Get initial closest nodes from our routing table
+	shortlist := dht.routingTable.GetClosest(targetID, Alpha)
+	if len(shortlist) == 0 {
+		log.Printf("FindNode: no nodes in routing table, cannot lookup %s", targetID.String()[:8])
+		result.Duration = time.Since(startTime)
+		return result
+	}
+
+	// Track which nodes we've queried
+	queried := make(map[uuid.UUID]bool)
+
+	// Track all nodes we've learned about, sorted by distance
+	allNodes := make(map[uuid.UUID]*System)
+	for _, sys := range shortlist {
+		allNodes[sys.ID] = sys
+	}
+
+	hops := 0
+	maxHops := 20 // Safety limit
+
+	for hops < maxHops {
+		hops++
+
+		// Select Alpha closest unqueried nodes
+		toQuery := selectUnqueried(shortlist, queried, Alpha)
+		if len(toQuery) == 0 {
+			// No more unqueried nodes in shortlist
+			break
+		}
+
+		// Query nodes in parallel
+		responses := dht.queryNodesParallel(toQuery, targetID)
+
+		// Process responses
+		newNodesFound := false
+		for _, resp := range responses {
+			if resp.err != nil {
+				dht.routingTable.MarkFailed(resp.nodeID)
+				continue
+			}
+
+			// Mark responding node as verified (successful communication)
+			dht.routingTable.MarkVerified(resp.nodeID)
+
+			// Mark as queried
+			queried[resp.nodeID] = true
+
+			// Save learned peer connections (responder knows these nodes)
+			if len(resp.nodes) > 0 {
+				peerIDs := make([]uuid.UUID, 0, len(resp.nodes))
+				for _, sys := range resp.nodes {
+					if sys.ID != dht.localSystem.ID && sys.ID != resp.nodeID {
+						peerIDs = append(peerIDs, sys.ID)
+					}
+				}
+				if len(peerIDs) > 0 {
+					dht.storage.SavePeerConnections(resp.nodeID, peerIDs)
+				}
+			}
+
+			// Process returned nodes
+			for _, sys := range resp.nodes {
+				if sys.ID == dht.localSystem.ID {
+					continue // Skip ourselves
+				}
+
+				// Check if this is the exact target
+				if sys.ID == targetID {
+					result.Found = sys
+				}
+
+				// Add to allNodes if not seen before
+				if _, exists := allNodes[sys.ID]; !exists {
+					allNodes[sys.ID] = sys
+					newNodesFound = true
+
+					// Cache this peer
+					dht.updateRoutingTable(sys)
+				}
+			}
+		}
+
+		// If we found the exact target, we can stop
+		if result.Found != nil {
+			break
+		}
+
+		// Update shortlist with all known nodes, sorted by distance
+		shortlist = sortByDistance(allNodes, targetID)
+
+		// Check termination condition: K closest nodes have all been queried
+		if allClosestQueried(shortlist, queried, K) && !newNodesFound {
+			break
+		}
+	}
+
+	// Final result is K closest nodes
+	result.ClosestNodes = truncateToK(shortlist, K)
+	result.Hops = hops
+	result.Duration = time.Since(startTime)
+
+	log.Printf("FindNode(%s): found %d nodes in %d hops (%v)",
+		targetID.String()[:8], len(result.ClosestNodes), hops, result.Duration)
+
+	return result
+}
+
+// Lookup finds a specific system by ID
+func (dht *DHT) Lookup(targetID uuid.UUID) (*System, error) {
+	result := dht.FindNode(targetID)
+	if result.Found != nil {
+		return result.Found, nil
+	}
+
+	// Check if any of the closest nodes is the target
+	for _, sys := range result.ClosestNodes {
+		if sys.ID == targetID {
+			return sys, nil
+		}
+	}
+
+	return nil, &DHTError{Code: 404, Message: "system not found"}
+}
+
+// queryNodesParallel queries multiple nodes in parallel
+func (dht *DHT) queryNodesParallel(nodes []*System, targetID uuid.UUID) []queryResponse {
+	var wg sync.WaitGroup
+	responses := make([]queryResponse, len(nodes))
+
+	for i, node := range nodes {
+		wg.Add(1)
+		go func(idx int, sys *System) {
+			defer wg.Done()
+
+			responses[idx].nodeID = sys.ID
+
+			if sys.PeerAddress == "" {
+				responses[idx].err = &DHTError{Code: 400, Message: "no peer address"}
+				return
+			}
+
+			closestNodes, err := dht.FindNodeDirectToSystem(sys, targetID)
+			if err != nil {
+				responses[idx].err = err
+				return
+			}
+
+			responses[idx].nodes = closestNodes
+		}(i, node)
+	}
+
+	wg.Wait()
+	return responses
+}
+
+// selectUnqueried returns up to count nodes from the list that haven't been queried
+func selectUnqueried(nodes []*System, queried map[uuid.UUID]bool, count int) []*System {
+	result := make([]*System, 0, count)
+	for _, node := range nodes {
+		if !queried[node.ID] {
+			result = append(result, node)
+			if len(result) >= count {
+				break
+			}
+		}
+	}
+	return result
+}
+
+// sortByDistance returns all nodes (no longer sorted by XOR distance since we want full visibility)
+func sortByDistance(nodes map[uuid.UUID]*System, target uuid.UUID) []*System {
+	result := make([]*System, 0, len(nodes))
+	for _, sys := range nodes {
+		result = append(result, sys)
+	}
+	// No sorting needed - in full-visibility mode, all peers are equally useful
+	return result
+}
+
+// allClosestQueried checks if the K closest nodes have all been queried
+func allClosestQueried(nodes []*System, queried map[uuid.UUID]bool, k int) bool {
+	count := 0
+	for _, node := range nodes {
+		if count >= k {
+			break
+		}
+		if !queried[node.ID] {
+			return false
+		}
+		count++
+	}
+	return true
+}
+
+// truncateToK returns at most K nodes from the list
+func truncateToK(nodes []*System, k int) []*System {
+	if len(nodes) <= k {
+		return nodes
+	}
+	return nodes[:k]
+}
+
+// FindClosestNodes is a convenience wrapper for FindNode
+func (dht *DHT) FindClosestNodes(targetID uuid.UUID, count int) []*System {
+	result := dht.FindNode(targetID)
+	if len(result.ClosestNodes) <= count {
+		return result.ClosestNodes
+	}
+	return result.ClosestNodes[:count]
 }
