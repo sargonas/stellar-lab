@@ -988,9 +988,13 @@ var (
 // warnIfOldProtocol logs a warning if the sender is using an old protocol version
 // that doesn't include ToSystemID in attestations. Only warns once per hour per system.
 func (dht *DHT) warnIfOldProtocol(msg *DHTMessage) {
-	// Check if attestation has targeted recipient (v1.6.0+)
+	// Check if attestation has targeted recipient (v1.6.0+) and not a v0.0.0 dev version
 	if msg.HasTargetedAttestation() {
 		return // New protocol, all good
+	}
+
+	if msg.Version == "0.0.0" {
+		return
 	}
 
 	// Rate limit warnings to once per hour per system
