@@ -18,15 +18,28 @@ type WebInterface struct {
     addr     string
 }
 
+// KnownSystemData holds system info plus metadata for the template
+type KnownSystemData struct {
+    System    *System
+    LearnedAt int64
+}
+
+// PeerData holds peer info plus metadata for the template
+type PeerData struct {
+    System    *System
+    LearnedAt int64
+    IsNew     bool // Discovered within last 24 hours
+}
+
 // WebInterfaceData holds data for the web template
 type WebInterfaceData struct {
     System            *System
-    Peers             []*System
+    Peers             []PeerData
     PeerIDs           []string
     PeerCount         int
     MaxPeers          int
     PeerCapacityDesc  string
-    KnownSystems      []*System
+    KnownSystems      []KnownSystemData
     TotalSystems      int
     ProtocolVersion   string
     AttestationCount  int
@@ -117,11 +130,27 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     sys := w.dht.GetLocalSystem()
     rt := w.dht.GetRoutingTable()
 
-    // Get routing table nodes (active peers)
-    peers := rt.GetAllRoutingTableNodes()
+    // Get routing table nodes (active peers) with metadata
+    cachedPeers := rt.GetAllRoutingTableNodesWithMeta()
+    oneDayAgo := time.Now().Add(-24 * time.Hour)
+    peers := make([]PeerData, 0, len(cachedPeers))
+    for _, cached := range cachedPeers {
+        peers = append(peers, PeerData{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+            IsNew:     cached.LearnedAt.After(oneDayAgo),
+        })
+    }
 
-    // Get all cached systems (known galaxy)
-    allSystems := rt.GetAllCachedSystems()
+    // Get all cached systems (known galaxy) with metadata
+    cachedSystems := rt.GetAllCachedSystemsWithMeta()
+    knownSystems := make([]KnownSystemData, 0, len(cachedSystems))
+    for _, cached := range cachedSystems {
+        knownSystems = append(knownSystems, KnownSystemData{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+        })
+    }
 
     // Get attestation count (use GetDatabaseStats)
     dbStats, _ := w.storage.GetDatabaseStats()
@@ -190,7 +219,7 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     // Build peer ID list for JS
     peerIDs := make([]string, len(peers))
     for i, p := range peers {
-        peerIDs[i] = p.ID.String()
+        peerIDs[i] = p.System.ID.String()
     }
 
     return WebInterfaceData{
@@ -200,8 +229,8 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         PeerCount:        rtSize,
         MaxPeers:         sys.GetMaxPeers(),
         PeerCapacityDesc: capacityDesc,
-        KnownSystems:     allSystems,
-        TotalSystems:     len(allSystems) + 1, // +1 for self
+        KnownSystems:     knownSystems,
+        TotalSystems:     len(knownSystems) + 1, // +1 for self
         ProtocolVersion:  CurrentProtocolVersion.String(),
         AttestationCount: attestationCount,
         DatabaseSize:     dbSizeStr,
@@ -230,16 +259,48 @@ func (w *WebInterface) handleSystemAPI(rw http.ResponseWriter, r *http.Request) 
     json.NewEncoder(rw).Encode(w.dht.GetLocalSystem())
 }
 
+// PeerResponse includes peer data plus cache metadata for API
+type PeerResponse struct {
+    *System
+    LearnedAt int64 `json:"learned_at"` // Unix timestamp
+}
+
 func (w *WebInterface) handlePeersAPI(rw http.ResponseWriter, r *http.Request) {
-    peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
+    cachedPeers := w.dht.GetRoutingTable().GetAllRoutingTableNodesWithMeta()
+
+    // Build response with learned_at timestamps
+    response := make([]PeerResponse, 0, len(cachedPeers))
+    for _, cached := range cachedPeers {
+        response = append(response, PeerResponse{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+        })
+    }
+
     rw.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(rw).Encode(peers)
+    json.NewEncoder(rw).Encode(response)
+}
+
+// KnownSystemResponse includes system data plus cache metadata
+type KnownSystemResponse struct {
+    *System
+    LearnedAt int64 `json:"learned_at"` // Unix timestamp
 }
 
 func (w *WebInterface) handleKnownSystemsAPI(rw http.ResponseWriter, r *http.Request) {
-    systems := w.dht.GetRoutingTable().GetAllCachedSystems()
+    cachedSystems := w.dht.GetRoutingTable().GetAllCachedSystemsWithMeta()
+
+    // Build response with learned_at timestamps
+    response := make([]KnownSystemResponse, 0, len(cachedSystems))
+    for _, cached := range cachedSystems {
+        response = append(response, KnownSystemResponse{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+        })
+    }
+
     rw.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(rw).Encode(systems)
+    json.NewEncoder(rw).Encode(response)
 }
 
 func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
@@ -449,6 +510,7 @@ const indexTemplate = `<!DOCTYPE html>
             border-radius: 8px;
         }
         .peer-name { font-weight: 500; color: #60a5fa; }
+        .new-badge { background: #22c55e; color: #000; font-size: 9px; padding: 1px 4px; border-radius: 3px; margin-left: 4px; font-weight: 600; }
         .peer-id { font-size: 0.8em; color: #666; font-family: monospace; }
         .star-display { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
         .star {
@@ -734,9 +796,9 @@ const indexTemplate = `<!DOCTYPE html>
                 <div id="peer-list" class="peer-list">
                     {{range .Peers}}
                     <div class="peer-item">
-                        <div class="peer-name">{{.Name}}</div>
-                        <div class="peer-id">{{.ID}}</div>
-                        <div class="coords">({{printf "%.1f" .X}}, {{printf "%.1f" .Y}}, {{printf "%.1f" .Z}})</div>
+                        <div class="peer-name">{{.System.Name}}{{if .IsNew}} <span class="new-badge">NEW</span>{{end}}</div>
+                        <div class="peer-id">{{.System.ID}}</div>
+                        <div class="coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</div>
                     </div>
                     {{else}}
                     <p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>
@@ -891,9 +953,16 @@ const indexTemplate = `<!DOCTYPE html>
 
         const knownSystems = [
             {{range .KnownSystems}}
-            {id: "{{.ID}}", name: "{{.Name}}", x: {{.X}}, y: {{.Y}}, z: {{.Z}}, color: "{{.Stars.Primary.Color}}", starClass: "{{.Stars.Primary.Class}}", starDesc: "{{.Stars.Primary.Description}}"},
+            {id: "{{.System.ID}}", name: "{{.System.Name}}", x: {{.System.X}}, y: {{.System.Y}}, z: {{.System.Z}}, color: "{{.System.Stars.Primary.Color}}", starClass: "{{.System.Stars.Primary.Class}}", starDesc: "{{.System.Stars.Primary.Description}}", learnedAt: {{.LearnedAt}}},
             {{end}}
         ];
+
+        // Check if a system was learned within the last 24 hours
+        function isNewSystem(learnedAt) {
+            if (!learnedAt) return false;
+            const oneDayAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
+            return learnedAt > oneDayAgo;
+        }
         const selfSystem = {
             id: "{{.System.ID}}",
             name: "{{.System.Name}}",
@@ -1132,7 +1201,8 @@ const indexTemplate = `<!DOCTYPE html>
 
                 // Create HTML label
                 const label = document.createElement('div');
-                label.textContent = sys.name;
+                const isNew = !isSelf && isNewSystem(sys.learnedAt);
+                label.innerHTML = sys.name + (isNew ? ' <span style="background:#22c55e;color:#000;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px;">NEW</span>' : '');
                 label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
                 if (isSelf) {
                     label.style.color = '#60a5fa';
@@ -1167,7 +1237,8 @@ const indexTemplate = `<!DOCTYPE html>
                 });
             }
 
-            // Add connection lines
+            // Add connection lines - ONLY show our direct peer connections by default
+            // Other connections are shown on hover
             const processedEdges = new Set();
             if (cachedConnections && cachedConnections.length > 0) {
                 cachedConnections.forEach(conn => {
@@ -1179,6 +1250,9 @@ const indexTemplate = `<!DOCTYPE html>
                     const edgeKey = [conn.from_id, conn.to_id].sort().join(':');
                     if (processedEdges.has(edgeKey)) return;
                     processedEdges.add(edgeKey);
+
+                    // Only draw lines involving ourselves (direct peers)
+                    const involvesUs = conn.from_id === selfSystem.id || conn.to_id === selfSystem.id;
 
                     const reciprocal = isReciprocal(conn.from_id, conn.to_id);
                     const points = [
@@ -1192,21 +1266,27 @@ const indexTemplate = `<!DOCTYPE html>
                         const material = new THREE.LineBasicMaterial({
                             color: 0x64c8ff,
                             transparent: true,
-                            opacity: 0.35
+                            opacity: involvesUs ? 0.5 : 0
                         });
                         line = new THREE.Line(geometry, material);
                     } else {
                         const material = new THREE.LineDashedMaterial({
                             color: 0xffaa44,
                             transparent: true,
-                            opacity: 0.3,
+                            opacity: involvesUs ? 0.4 : 0,
                             dashSize: 30,
                             gapSize: 20
                         });
                         line = new THREE.Line(geometry, material);
                         line.computeLineDistances();
                     }
-                    line.userData = { fromId: conn.from_id, toId: conn.to_id, reciprocal: reciprocal };
+                    line.userData = {
+                        fromId: conn.from_id,
+                        toId: conn.to_id,
+                        reciprocal: reciprocal,
+                        involvesUs: involvesUs,
+                        baseOpacity: involvesUs ? (reciprocal ? 0.5 : 0.4) : 0
+                    };
                     scene.add(line);
                     connectionLines.push(line);
                 });
@@ -1262,8 +1342,8 @@ const indexTemplate = `<!DOCTYPE html>
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#60a5fa;">●</span> You</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#4ade80;">●</span> Live peers</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#996666;">●</span> Cached</div>' +
-                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Reciprocal</div>' +
-                '<div style="display:flex;align-items:center;gap:6px;"><span style="color:#ffaa44;">┄</span> One-way</div>';
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Your connections</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;color:#666;font-size:10px;">Hover to see other connections</div>';
             container.appendChild(legend);
             
             // Add tooltip
@@ -1311,13 +1391,17 @@ const indexTemplate = `<!DOCTYPE html>
             
             function highlightConnections(systemId) {
                 connectionLines.forEach(line => {
-                    if (systemId && (line.userData.fromId === systemId || line.userData.toId === systemId)) {
+                    const involvesHovered = systemId && (line.userData.fromId === systemId || line.userData.toId === systemId);
+
+                    if (involvesHovered) {
+                        // Highlight connections involving hovered system
                         line.material.opacity = line.userData.reciprocal ? 0.8 : 0.6;
                         if (line.userData.reciprocal) {
                             line.material.color.setHex(0x60a5fa);
                         }
                     } else {
-                        line.material.opacity = line.userData.reciprocal ? 0.35 : 0.3;
+                        // Return to base state: only our direct connections visible
+                        line.material.opacity = line.userData.baseOpacity;
                         if (line.userData.reciprocal) {
                             line.material.color.setHex(0x64c8ff);
                         }
@@ -1489,18 +1573,22 @@ const indexTemplate = `<!DOCTYPE html>
                     healthEl.className = 'stat-value health-critical';
                 }
                 
-                // Update peer list
+                // Update peer list (sorted alphabetically)
                 const peerListEl = document.getElementById('peer-list');
+                const oneDayAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
                 if (peers.length === 0) {
                     peerListEl.innerHTML = '<p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>';
                 } else {
-                    peerListEl.innerHTML = peers.map(p => 
-                        '<div class="peer-item">' +
-                        '<div class="peer-name">' + p.name + '</div>' +
-                        '<div class="peer-id">' + p.id + '</div>' +
-                        '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
-                        '</div>'
-                    ).join('');
+                    const sortedPeers = [...peers].sort((a, b) => a.name.localeCompare(b.name));
+                    peerListEl.innerHTML = sortedPeers.map(p => {
+                        const isNew = p.learned_at && p.learned_at > oneDayAgo;
+                        const newBadge = isNew ? ' <span class="new-badge">NEW</span>' : '';
+                        return '<div class="peer-item">' +
+                            '<div class="peer-name">' + p.name + newBadge + '</div>' +
+                            '<div class="peer-id">' + p.id + '</div>' +
+                            '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
+                            '</div>';
+                    }).join('');
                 }
                 
                 // Fetch known systems for counts AND map update
@@ -1525,7 +1613,8 @@ const indexTemplate = `<!DOCTYPE html>
                         z: s.z,
                         color: s.stars?.primary?.color || '#ffffff',
                         starClass: s.stars?.primary?.class || 'M',
-                        starDesc: s.stars?.primary?.description || ''
+                        starDesc: s.stars?.primary?.description || '',
+                        learnedAt: s.learned_at || 0
                     }));
 
                     // Fetch fresh connections
