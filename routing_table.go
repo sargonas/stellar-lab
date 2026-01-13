@@ -300,6 +300,18 @@ func (rt *RoutingTable) GetAllCachedSystems() []*System {
 	return result
 }
 
+// GetAllCachedSystemsWithMeta returns all cached systems with their metadata
+func (rt *RoutingTable) GetAllCachedSystemsWithMeta() []*CachedSystem {
+	rt.cacheMu.RLock()
+	defer rt.cacheMu.RUnlock()
+
+	result := make([]*CachedSystem, 0, len(rt.systemCache))
+	for _, cached := range rt.systemCache {
+		result = append(result, cached)
+	}
+	return result
+}
+
 // GetVerifiedCachedSystems returns only systems verified within maxAge
 func (rt *RoutingTable) GetVerifiedCachedSystems(maxAge time.Duration) []*System {
 	rt.cacheMu.RLock()
