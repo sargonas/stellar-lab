@@ -168,6 +168,25 @@ func (rt *RoutingTable) GetRoutingTableSize() int {
 	return len(rt.GetAllRoutingTableNodes())
 }
 
+// GetAllRoutingTableNodesWithMeta returns active peers with their cache metadata
+func (rt *RoutingTable) GetAllRoutingTableNodesWithMeta() []*CachedSystem {
+	rt.cacheMu.RLock()
+	defer rt.cacheMu.RUnlock()
+
+	verificationCutoff := time.Now().Add(-VerificationCutoff)
+	result := make([]*CachedSystem, 0)
+
+	for _, cached := range rt.systemCache {
+		// "Active peer" = verified recently and not failing
+		if cached.Verified && !cached.LastVerified.IsZero() &&
+			cached.LastVerified.After(verificationCutoff) &&
+			cached.FailCount < MaxFailCount {
+			result = append(result, cached)
+		}
+	}
+	return result
+}
+
 // === System Cache Methods ===
 
 // CacheSystem adds a system to the cache

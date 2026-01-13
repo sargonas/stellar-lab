@@ -24,10 +24,17 @@ type KnownSystemData struct {
     LearnedAt int64
 }
 
+// PeerData holds peer info plus metadata for the template
+type PeerData struct {
+    System    *System
+    LearnedAt int64
+    IsNew     bool // Discovered within last 24 hours
+}
+
 // WebInterfaceData holds data for the web template
 type WebInterfaceData struct {
     System            *System
-    Peers             []*System
+    Peers             []PeerData
     PeerIDs           []string
     PeerCount         int
     MaxPeers          int
@@ -123,8 +130,17 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     sys := w.dht.GetLocalSystem()
     rt := w.dht.GetRoutingTable()
 
-    // Get routing table nodes (active peers)
-    peers := rt.GetAllRoutingTableNodes()
+    // Get routing table nodes (active peers) with metadata
+    cachedPeers := rt.GetAllRoutingTableNodesWithMeta()
+    oneDayAgo := time.Now().Add(-24 * time.Hour)
+    peers := make([]PeerData, 0, len(cachedPeers))
+    for _, cached := range cachedPeers {
+        peers = append(peers, PeerData{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+            IsNew:     cached.LearnedAt.After(oneDayAgo),
+        })
+    }
 
     // Get all cached systems (known galaxy) with metadata
     cachedSystems := rt.GetAllCachedSystemsWithMeta()
@@ -203,7 +219,7 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     // Build peer ID list for JS
     peerIDs := make([]string, len(peers))
     for i, p := range peers {
-        peerIDs[i] = p.ID.String()
+        peerIDs[i] = p.System.ID.String()
     }
 
     return WebInterfaceData{
@@ -243,10 +259,26 @@ func (w *WebInterface) handleSystemAPI(rw http.ResponseWriter, r *http.Request) 
     json.NewEncoder(rw).Encode(w.dht.GetLocalSystem())
 }
 
+// PeerResponse includes peer data plus cache metadata for API
+type PeerResponse struct {
+    *System
+    LearnedAt int64 `json:"learned_at"` // Unix timestamp
+}
+
 func (w *WebInterface) handlePeersAPI(rw http.ResponseWriter, r *http.Request) {
-    peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
+    cachedPeers := w.dht.GetRoutingTable().GetAllRoutingTableNodesWithMeta()
+
+    // Build response with learned_at timestamps
+    response := make([]PeerResponse, 0, len(cachedPeers))
+    for _, cached := range cachedPeers {
+        response = append(response, PeerResponse{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+        })
+    }
+
     rw.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(rw).Encode(peers)
+    json.NewEncoder(rw).Encode(response)
 }
 
 // KnownSystemResponse includes system data plus cache metadata
@@ -478,6 +510,7 @@ const indexTemplate = `<!DOCTYPE html>
             border-radius: 8px;
         }
         .peer-name { font-weight: 500; color: #60a5fa; }
+        .new-badge { background: #22c55e; color: #000; font-size: 9px; padding: 1px 4px; border-radius: 3px; margin-left: 4px; font-weight: 600; }
         .peer-id { font-size: 0.8em; color: #666; font-family: monospace; }
         .star-display { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
         .star {
@@ -763,9 +796,9 @@ const indexTemplate = `<!DOCTYPE html>
                 <div id="peer-list" class="peer-list">
                     {{range .Peers}}
                     <div class="peer-item">
-                        <div class="peer-name">{{.Name}}</div>
-                        <div class="peer-id">{{.ID}}</div>
-                        <div class="coords">({{printf "%.1f" .X}}, {{printf "%.1f" .Y}}, {{printf "%.1f" .Z}})</div>
+                        <div class="peer-name">{{.System.Name}}{{if .IsNew}} <span class="new-badge">NEW</span>{{end}}</div>
+                        <div class="peer-id">{{.System.ID}}</div>
+                        <div class="coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</div>
                     </div>
                     {{else}}
                     <p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>
@@ -1542,17 +1575,20 @@ const indexTemplate = `<!DOCTYPE html>
                 
                 // Update peer list (sorted alphabetically)
                 const peerListEl = document.getElementById('peer-list');
+                const oneDayAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
                 if (peers.length === 0) {
                     peerListEl.innerHTML = '<p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>';
                 } else {
                     const sortedPeers = [...peers].sort((a, b) => a.name.localeCompare(b.name));
-                    peerListEl.innerHTML = sortedPeers.map(p =>
-                        '<div class="peer-item">' +
-                        '<div class="peer-name">' + p.name + '</div>' +
-                        '<div class="peer-id">' + p.id + '</div>' +
-                        '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
-                        '</div>'
-                    ).join('');
+                    peerListEl.innerHTML = sortedPeers.map(p => {
+                        const isNew = p.learned_at && p.learned_at > oneDayAgo;
+                        const newBadge = isNew ? ' <span class="new-badge">NEW</span>' : '';
+                        return '<div class="peer-item">' +
+                            '<div class="peer-name">' + p.name + newBadge + '</div>' +
+                            '<div class="peer-id">' + p.id + '</div>' +
+                            '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
+                            '</div>';
+                    }).join('');
                 }
                 
                 // Fetch known systems for counts AND map update
