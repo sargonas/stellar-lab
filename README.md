@@ -6,15 +6,15 @@ A silly program for homelabbers and others to run when you have a few spare megs
 
 Stellar Lab creates a virtual galaxy where each participant runs a node representing their star system. Systems have procedurally generated identities... star types, binary/trinary compositions, and 3D coordinates... all derived deterministically from cryptographic seeds. Nodes build reputation through cryptographically signed attestations of their interactions with peers.
 
-**Key Properties:**
-- **Immediate discovery**: New nodes get complete galaxy state via full-sync on bootstrap
-- **Full galaxy awareness**: Every node knows about every other node
-- **Simple gossip**: Peers share what they know, no complex routing required
-- **Organic clustering**: New systems spawn near their sponsor system, forming natural clusters
+**Core Features:**
+- **Immediate discovery**: New nodes learn galaxy state via a full-sync on bootstrap
+- **Full galaxy awareness**: Every node knows about every other node via peer gossiping
+- **Simple gossip**: Peers share what they know about each other peer
+- **Organic clustering**: New systems are asigned a sponsor with open slots, spawning near their sponsor, forming natural clusters
 - **Scalable**: Designed for tens of thousands of nodes but *can* go higher easily
-- **Tamper-resistant**: Identity binding, coordinate validation, and attestation verification prevent common spoofing attacks, though this isn't a blockchain and isn't meant to be one and there may be gaps in my design!
+- **Resilient**: Identity binding, coordinate validation, and attestation verification prevent common spoofing attacks, (though this isn't a blockchain and isn't meant to be one and there may be gaps in my design!)
 
-## Features
+## Other Features
 
 - **Unique Identity**: UUID generated from hardware fingerprint, cryptographically bound to your keypair
 - **Multi-Star Systems**: Single (50%), Binary (40%), and Trinary (10%) system probabilities
@@ -26,21 +26,20 @@ Stellar Lab creates a virtual galaxy where each participant runs a node represen
 - **Attestation System**: Signed proofs of every peer interaction
 - **Stellar Credits**: Earn credits for uptime with bonuses for network contribution
 - **Web Interface**: Dashboard with interactive galaxy map visualization
-- **Persistent Storage**: SQLite database preserves identity across restarts
+- **Persistent Storage**: SQLite database preserves identity across restarts (keep backups my friends!)
 
 ## Stellar Credits
 
-Nodes earn Stellar Credits based on verified uptime, with bonuses that reward healthy network participation.
+Nodes earn Stellar Credits based on verified uptime, with bonuses that reward healthy network participation. At this time they have no function but stubbed out hooks are in place for validation to support things like future transfers.
 
 ### Base Rate
 - **1 credit per hour** of verified uptime
-- Normalized across all star types (an M-class earns the same as an O-class despite more peers)
 
 ### Bonuses
 
 | Bonus | Max | Description |
 |-------|-----|-------------|
-| **Bridge** | +50% | Being critical for network connectivity (peers depend on you to reach the galaxy) |
+| **Bridge** | +50% | Being critical for network connectivity (peers depend on you to reach the rest of the galaxy) |
 | **Longevity** | +52% | +1% per week of continuous uptime, capping at 1 year |
 | **Pioneer** | +30% | Participating when the network is small (scales down as network grows past 20 nodes, reaches 0% at 100+) |
 | **Reciprocity** | +5% | Healthy bidirectional relationships with peers |
@@ -78,7 +77,7 @@ docker run -d \
 
 A sample `docker-compose.yml` is included in the repository.
 
-**Important**: If running multiple nodes on the same host, each needs unique internal *AND* external ports:
+**Important**: If running multiple nodes on the same host, each needs unique internal *AND* external ports, as the internal ports is what is advertised externally to peers:
 ```yaml
 # Node 1
 ports: ["8080:8080", "7867:7867"]
@@ -88,6 +87,8 @@ STELLAR_PUBLIC_ADDRESS: "your-domain.com:7867"
 ports: ["8081:8081", "7868:7868"]
 STELLAR_PUBLIC_ADDRESS: "your-domain.com:7868"
 ```
+
+(I'm aware the port relations are a bit counter intuitive, and this is a to-do item for me to work on to make the advertised ports somehow correlate to the docker config, if possible)
 
 ## Building from Source
 
@@ -236,6 +237,7 @@ Star class determines maximum peer connections:
 | `GET /api/stats` | Network statistics |
 | `GET /api/credits` | Credit balance and rank |
 | `GET /api/connections` | Peer connection topology |
+| `GET /api/version` | Node's software version |
 
 ### DHT Protocol Server (:7867)
 
@@ -251,14 +253,13 @@ Star class determines maximum peer connections:
 The dashboard displays:
 
 - **System Info**: Name, UUID, star classification, coordinates
-- **DHT Statistics**: Routing table size, known systems, cache size
-- **Stellar Credits**: Balance, rank, and progress to next rank
-- **Health Status**: Connectivity indicator (Healthy/Warning/Isolated)
-- **Peer List**: Connected systems with coordinates
-- **Galaxy Map**: Interactive 2D visualization with connection lines
-  - Drag to pan, scroll to zoom
+- **Network Status**: Known Systems, Active/Degraded/Pending/Stale status of each, Peer max, Attestation count and DB size
+- **Stellar Credits**: Balance, rank, progress to next rank, and longevity streak progress
+- **Routing Table List**: Connected systems with UUID and coordinates
+- **Galaxy Map**: Interactive 3D visualization with connection lines
+  - Left click Drag to rotate, Right Click drag to pan, scroll to zoom
   - Hover for system details
-  - Your system highlighted in blue
+  - Your system highlighted in blue pulse ring
 
 ## Database
 
@@ -266,39 +267,38 @@ The dashboard displays:
 
 | Table | Purpose |
 |-------|---------|
-| `system` | Local node identity, keypair, coordinates |
-| `peers` | Known peer addresses |
-| `peer_systems` | Cached remote system info |
-| `peer_connections` | Tracks peer relationships |
-| `identity_bindings` | UUID to public key mapping (spoofing prevention) |
-| `attestations` | Recent signed interaction proofs |
-| `attestation_summaries` | Compacted historical data |
+| `system` | Local node identity, keypair, coordinates, sponsor info |
+| `peer_systems` | Cache of known remote system info |
+| `peer_connections` | Tracks peer relationships galaxy wide |
+| `identity_bindings` | UUID to public key mapping (for spoofing prevention) |
+| `attestations` | Recent signed interaction proofs with sender, receiver, timestamp, message type, and verified status |
 | `credit_balance` | Stellar credits and streak tracking |
-| `credit_transfers` | Transfer history (future feature) |
-| `verified_transfers` | Validated transfers (future feature) |
+| `credit_transfers` | Transfer history (future use prep) |
+| `verified_transfers` | Validated transfers (future use prep) |
 
 ### Backup
 
-Your identity lives in the database file. Back it up to preserve your UUID, keypair, coordinates, and credit balance across hardware changes.
+Your identity lives in the database file. Back it up to preserve your UUID, keypair, coordinates, and credit balance across hardware changes and server migrations.
 
 ## Troubleshooting
 
 ### Node stays isolated
 
 ```bash
-# Check if seed nodes are reachable
+# Check if seed nodes are reachable or failing
 curl http://localhost:7867/api/discovery
 
-# Verify SEED-NODES.txt is accessible
+# Verify that SEED-NODES.txt is accessible
 curl https://raw.githubusercontent.com/sargonas/stellar-lab/main/SEED-NODES.txt
 
-# Try explicit bootstrap
-./stellar-lab -name "Test" -public-address "you.com:7867" -bootstrap "known-peer:7867"
+# Try an explicit bootstrap to a known system
+./stellar-lab -name "WhyUNoWorky" -public-address "your-domain.com:7867" -bootstrap "known-good.peer:7867"
 ```
 
 ### Port conflicts
 
 ```bash
+# Are your ports even free bro?
 lsof -i :8080
 lsof -i :7867
 
@@ -313,14 +313,14 @@ Each node needs unique ports for BOTH the web UI (-address) AND the DHT (-public
 ### Database errors
 
 ```bash
-# Reset and start fresh (loses identity!)
+# Reset and start fresh (this means you will loose your identity! Break glass in case of emergency-type move!)
 rm stellar-lab.db
 ./stellar-lab -name "Sol" -public-address "you.com:7867"
 ```
 
 ### You made a deployment mistake and now have duplicate systems!
 
-Oh no, you deployed your system with a bad name or other config error, fixed it, and re deployed it and now there are two on the map and in the tables? FEAR NOT! After about an hour or so the system's housekeeping will drop them off the tables, and after a day or so they will be gone entirely from maps!
+Oh no, you deployed your system with a bad name or other config error, fixed it, and re deployed it and now there are two on the map and in the tables? FEAR NOT! After about an hour or so the system's housekeeping will drop them off the gossip tables, and after 36 hours or so they will be gone entirely from galactic maps and tables!
 
 ## Contributing
 
@@ -337,9 +337,8 @@ To add your node as a seed:
 
 1. MUCH better Web UI. It should always be lightweight and simple, but it can be far better than what we have at the moment!
 2. Improve the actual map on the Web UI
-3. API improvements. Right now it is the same port as the WebUI. I want to either split more of the API between Web and protocol, so that people can keep the webUI and some endpoints behind a firewall and expose others, or make a completely separate API port with public and private endpoints
-4. Beacon system. I would like to trigger a "beacon" once every 24 hours in a random system, and every system on the shortest path between the previous beacon and the new one gets a credit bonus.
-5. Eventually, let people send and recieve stellar credits between systems, but this is WAY out there for now.
+3. Beacon system. I would like to trigger a "beacon" once every 24 hours in a random system, and every system on the shortest path between the previous beacon and the new one gets a credit bonus.
+4. Eventually, let people send and recieve stellar credits between systems, but this is WAY out there for now.
 
 ## License
 

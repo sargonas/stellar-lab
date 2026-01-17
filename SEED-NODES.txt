@@ -18,3 +18,4 @@
 # === SEED NODES ===
 # (Add seed nodes below this line)
 stellar-lab.sargonas.com:7867
+stellar-lab.sargonas.com:7868
