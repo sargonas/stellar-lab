@@ -26,9 +26,10 @@ type KnownSystemData struct {
 
 // PeerData holds peer info plus metadata for the template
 type PeerData struct {
-    System    *System
-    LearnedAt int64
-    IsNew     bool // Discovered within last 24 hours
+    System       *System
+    LearnedAt    int64
+    FirstSeenStr string // pre-convert LearnedAt to human readable
+    IsNew        bool   // Discovered within last 24 hours
 }
 
 // WebInterfaceData holds data for the web template
@@ -136,9 +137,10 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     peers := make([]PeerData, 0, len(cachedPeers))
     for _, cached := range cachedPeers {
         peers = append(peers, PeerData{
-            System:    cached.System,
-            LearnedAt: cached.LearnedAt.Unix(),
-            IsNew:     cached.LearnedAt.After(oneDayAgo),
+            System:       cached.System,
+            LearnedAt:    cached.LearnedAt.Unix(),
+            FirstSeenStr: cached.LearnedAt.Format("01/02/06"),
+            IsNew:        cached.LearnedAt.After(oneDayAgo),
         })
     }
 
@@ -531,7 +533,9 @@ const indexTemplate = `<!DOCTYPE html>
             0%, 100% { box-shadow: 0 0 15px #8b5cf6, 0 0 30px #6366f1, 0 0 45px rgba(139, 92, 246, 0.3); }
             50% { box-shadow: 0 0 20px #a78bfa, 0 0 40px #8b5cf6, 0 0 60px rgba(139, 92, 246, 0.4); }
         }
-        .coords { font-family: monospace; color: #888; font-size: 0.9em; }
+        .peer-meta { font-size: 0.85em; color: #888; }
+        .coords { font-family: monospace; }
+        .first-seen { color: #666; }
         #galaxy-map {
             width: 100%;
             height: 600px;
@@ -798,7 +802,7 @@ const indexTemplate = `<!DOCTYPE html>
                     <div class="peer-item">
                         <div class="peer-name">{{.System.Name}}{{if .IsNew}} <span class="new-badge">NEW</span>{{end}}</div>
                         <div class="peer-id">{{.System.ID}}</div>
-                        <div class="coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</div>
+                        <div class="peer-meta"><span class="coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</span> · <span class="first-seen">First seen: {{.FirstSeenStr}}</span></div>
                     </div>
                     {{else}}
                     <p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>
@@ -1576,6 +1580,14 @@ const indexTemplate = `<!DOCTYPE html>
                 // Update peer list (sorted alphabetically)
                 const peerListEl = document.getElementById('peer-list');
                 const oneDayAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
+                const formatDate = (ts) => {
+                    if (!ts) return 'Unknown';
+                    const d = new Date(ts * 1000);
+                    const mm = String(d.getMonth() + 1).padStart(2, '0');
+                    const dd = String(d.getDate()).padStart(2, '0');
+                    const yy = String(d.getFullYear()).slice(-2);
+                    return mm + '/' + dd + '/' + yy;
+                };
                 if (peers.length === 0) {
                     peerListEl.innerHTML = '<p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>';
                 } else {
@@ -1583,10 +1595,11 @@ const indexTemplate = `<!DOCTYPE html>
                     peerListEl.innerHTML = sortedPeers.map(p => {
                         const isNew = p.learned_at && p.learned_at > oneDayAgo;
                         const newBadge = isNew ? ' <span class="new-badge">NEW</span>' : '';
+                        const firstSeen = formatDate(p.learned_at);
                         return '<div class="peer-item">' +
                             '<div class="peer-name">' + p.name + newBadge + '</div>' +
                             '<div class="peer-id">' + p.id + '</div>' +
-                            '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
+                            '<div class="peer-meta"><span class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</span> · <span class="first-seen">First seen: ' + firstSeen + '</span></div>' +
                             '</div>';
                     }).join('');
                 }
