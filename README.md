@@ -28,6 +28,8 @@ Stellar Lab creates a virtual galaxy where each participant runs a node represen
 - **Web Interface**: Dashboard with interactive galaxy map visualization
 - **Persistent Storage**: SQLite database preserves identity across restarts (keep backups my friends!)
 
+![WebUI](webui.png)
+
 ## Stellar Credits
 
 Nodes earn Stellar Credits based on verified uptime, with bonuses that reward healthy network participation. At this time they have no function but stubbed out hooks are in place for validation to support things like future transfers.
