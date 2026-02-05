@@ -802,7 +802,8 @@ const indexTemplate = `<!DOCTYPE html>
                     <div class="peer-item">
                         <div class="peer-name">{{.System.Name}}{{if .IsNew}} <span class="new-badge">NEW</span>{{end}}</div>
                         <div class="peer-id">{{.System.ID}}</div>
-                        <div class="peer-meta"><span class="coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</span> · <span class="first-seen">First seen: {{.FirstSeenStr}}</span></div>
+                        <div class="coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</div>
+                        <div class="first-seen">First seen: {{.FirstSeenStr}}</div>
                     </div>
                     {{else}}
                     <p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>

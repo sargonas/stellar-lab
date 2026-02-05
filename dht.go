@@ -432,6 +432,10 @@ func (dht *DHT) serveHTTP(listener net.Listener) {
 	mux.HandleFunc("/api/discovery", dht.handleDiscoveryInfo)
 	mux.HandleFunc("/api/full-sync", dht.handleFullSync)
 
+	// Register Community API routes (public read-only endpoints)
+	communityAPI := NewCommunityAPI(dht, dht.storage)
+	communityAPI.RegisterRoutes(mux)
+
 	log.Printf("DHT listening on %s", dht.listenAddr)
 	if err := http.Serve(listener, mux); err != nil {
 		log.Printf("DHT server error: %v", err)
