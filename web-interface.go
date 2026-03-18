@@ -18,15 +18,29 @@ type WebInterface struct {
     addr     string
 }
 
+// KnownSystemData holds system info plus metadata for the template
+type KnownSystemData struct {
+    System    *System
+    LearnedAt int64
+}
+
+// PeerData holds peer info plus metadata for the template
+type PeerData struct {
+    System       *System
+    LearnedAt    int64
+    FirstSeenStr string // pre-convert LearnedAt to human readable
+    IsNew        bool   // Discovered within last 24 hours
+}
+
 // WebInterfaceData holds data for the web template
 type WebInterfaceData struct {
     System            *System
-    Peers             []*System
+    Peers             []PeerData
     PeerIDs           []string
     PeerCount         int
     MaxPeers          int
     PeerCapacityDesc  string
-    KnownSystems      []*System
+    KnownSystems      []KnownSystemData
     TotalSystems      int
     ProtocolVersion   string
     AttestationCount  int
@@ -35,6 +49,8 @@ type WebInterfaceData struct {
     NodeHealthClass   string
     RoutingTableSize  int
     CacheSize         int
+    // Peer state breakdown
+    PeerStates        PeerStateBreakdown
     // Stellar Credits
     CreditBalance     int64
     CreditRank        string
@@ -115,11 +131,28 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     sys := w.dht.GetLocalSystem()
     rt := w.dht.GetRoutingTable()
 
-    // Get routing table nodes (active peers)
-    peers := rt.GetAllRoutingTableNodes()
+    // Get routing table nodes (active peers) with metadata
+    cachedPeers := rt.GetAllRoutingTableNodesWithMeta()
+    oneDayAgo := time.Now().Add(-24 * time.Hour)
+    peers := make([]PeerData, 0, len(cachedPeers))
+    for _, cached := range cachedPeers {
+        peers = append(peers, PeerData{
+            System:       cached.System,
+            LearnedAt:    cached.LearnedAt.Unix(),
+            FirstSeenStr: cached.LearnedAt.Format("01/02/06"),
+            IsNew:        cached.LearnedAt.After(oneDayAgo),
+        })
+    }
 
-    // Get all cached systems (known galaxy)
-    allSystems := rt.GetAllCachedSystems()
+    // Get all cached systems (known galaxy) with metadata
+    cachedSystems := rt.GetAllCachedSystemsWithMeta()
+    knownSystems := make([]KnownSystemData, 0, len(cachedSystems))
+    for _, cached := range cachedSystems {
+        knownSystems = append(knownSystems, KnownSystemData{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+        })
+    }
 
     // Get attestation count (use GetDatabaseStats)
     dbStats, _ := w.storage.GetDatabaseStats()
@@ -188,7 +221,7 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
     // Build peer ID list for JS
     peerIDs := make([]string, len(peers))
     for i, p := range peers {
-        peerIDs[i] = p.ID.String()
+        peerIDs[i] = p.System.ID.String()
     }
 
     return WebInterfaceData{
@@ -198,8 +231,8 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         PeerCount:        rtSize,
         MaxPeers:         sys.GetMaxPeers(),
         PeerCapacityDesc: capacityDesc,
-        KnownSystems:     allSystems,
-        TotalSystems:     len(allSystems) + 1, // +1 for self
+        KnownSystems:     knownSystems,
+        TotalSystems:     len(knownSystems) + 1, // +1 for self
         ProtocolVersion:  CurrentProtocolVersion.String(),
         AttestationCount: attestationCount,
         DatabaseSize:     dbSizeStr,
@@ -207,6 +240,7 @@ func (w *WebInterface) buildTemplateData() WebInterfaceData {
         NodeHealthClass:  healthClass,
         RoutingTableSize: rtSize,
         CacheSize:        rt.GetCacheSize(),
+        PeerStates:       rt.GetPeerStateBreakdown(),
         // Credits
         CreditBalance:     creditBalance,
         CreditRank:        creditRank,
@@ -227,21 +261,53 @@ func (w *WebInterface) handleSystemAPI(rw http.ResponseWriter, r *http.Request) 
     json.NewEncoder(rw).Encode(w.dht.GetLocalSystem())
 }
 
+// PeerResponse includes peer data plus cache metadata for API
+type PeerResponse struct {
+    *System
+    LearnedAt int64 `json:"learned_at"` // Unix timestamp
+}
+
 func (w *WebInterface) handlePeersAPI(rw http.ResponseWriter, r *http.Request) {
-    peers := w.dht.GetRoutingTable().GetAllRoutingTableNodes()
+    cachedPeers := w.dht.GetRoutingTable().GetAllRoutingTableNodesWithMeta()
+
+    // Build response with learned_at timestamps
+    response := make([]PeerResponse, 0, len(cachedPeers))
+    for _, cached := range cachedPeers {
+        response = append(response, PeerResponse{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+        })
+    }
+
     rw.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(rw).Encode(peers)
+    json.NewEncoder(rw).Encode(response)
+}
+
+// KnownSystemResponse includes system data plus cache metadata
+type KnownSystemResponse struct {
+    *System
+    LearnedAt int64 `json:"learned_at"` // Unix timestamp
 }
 
 func (w *WebInterface) handleKnownSystemsAPI(rw http.ResponseWriter, r *http.Request) {
-    systems := w.dht.GetRoutingTable().GetAllCachedSystems()
+    cachedSystems := w.dht.GetRoutingTable().GetAllCachedSystemsWithMeta()
+
+    // Build response with learned_at timestamps
+    response := make([]KnownSystemResponse, 0, len(cachedSystems))
+    for _, cached := range cachedSystems {
+        response = append(response, KnownSystemResponse{
+            System:    cached.System,
+            LearnedAt: cached.LearnedAt.Unix(),
+        })
+    }
+
     rw.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(rw).Encode(systems)
+    json.NewEncoder(rw).Encode(response)
 }
 
 func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
     stats := w.dht.GetNetworkStats()
-    
+
     // Merge in database stats for AJAX refresh
     dbStats, err := w.storage.GetDatabaseStats()
     if err == nil && dbStats != nil {
@@ -253,7 +319,11 @@ func (w *WebInterface) handleStatsAPI(rw http.ResponseWriter, r *http.Request) {
             stats["database_size"] = formatBytes(sizeBytes)
         }
     }
-    
+
+    // Add peer state breakdown
+    breakdown := w.dht.GetRoutingTable().GetPeerStateBreakdown()
+    stats["peer_states"] = breakdown
+
     rw.Header().Set("Content-Type", "application/json")
     json.NewEncoder(rw).Encode(stats)
 }
@@ -442,6 +512,7 @@ const indexTemplate = `<!DOCTYPE html>
             border-radius: 8px;
         }
         .peer-name { font-weight: 500; color: #60a5fa; }
+        .new-badge { background: #22c55e; color: #000; font-size: 9px; padding: 1px 4px; border-radius: 3px; margin-left: 4px; font-weight: 600; }
         .peer-id { font-size: 0.8em; color: #666; font-family: monospace; }
         .star-display { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
         .star {
@@ -462,7 +533,9 @@ const indexTemplate = `<!DOCTYPE html>
             0%, 100% { box-shadow: 0 0 15px #8b5cf6, 0 0 30px #6366f1, 0 0 45px rgba(139, 92, 246, 0.3); }
             50% { box-shadow: 0 0 20px #a78bfa, 0 0 40px #8b5cf6, 0 0 60px rgba(139, 92, 246, 0.4); }
         }
-        .coords { font-family: monospace; color: #888; font-size: 0.9em; }
+        .peer-meta { font-size: 0.85em; color: #888; }
+        .coords { font-family: monospace; }
+        .first-seen { color: #666; }
         #galaxy-map {
             width: 100%;
             height: 600px;
@@ -564,6 +637,39 @@ const indexTemplate = `<!DOCTYPE html>
             font-size: 0.75em;
             color: #666;
         }
+        .peer-states {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin: 12px 0;
+            padding: 12px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+        }
+        .peer-state {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .state-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .state-active { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+        .state-pending { background: #60a5fa; box-shadow: 0 0 6px #60a5fa; }
+        .state-degraded { background: #facc15; box-shadow: 0 0 6px #facc15; }
+        .state-stale { background: #f87171; box-shadow: 0 0 6px #f87171; }
+        .state-label {
+            color: #888;
+            font-size: 0.85em;
+            flex-grow: 1;
+        }
+        .state-count {
+            font-weight: 500;
+            font-size: 0.95em;
+        }
         .map-tooltip .tooltip-class {
             color: #a78bfa;
             font-size: 11px;
@@ -622,22 +728,36 @@ const indexTemplate = `<!DOCTYPE html>
             </div>
 
             <div class="card">
-                <h2>Stellar Transport</h2>
+                <h2>Network Status</h2>
                 <div class="stat-row">
-                    <span class="stat-label">Routing Table</span>
-                    <span id="stat-routing" class="stat-value">{{.RoutingTableSize}} nodes</span>
+                    <span class="stat-label">Known Systems</span>
+                    <span id="stat-galaxy" class="stat-value">{{.TotalSystems}} total</span>
                 </div>
-                <div class="stat-row">
-                    <span class="stat-label">System Cache</span>
-                    <span id="stat-cache" class="stat-value">{{.CacheSize}} systems</span>
+                <div class="peer-states" id="peer-states">
+                    <div class="peer-state">
+                        <span class="state-dot state-active"></span>
+                        <span class="state-label">Active</span>
+                        <span id="state-active" class="state-count">{{.PeerStates.Active}}</span>
+                    </div>
+                    <div class="peer-state">
+                        <span class="state-dot state-pending"></span>
+                        <span class="state-label">Pending</span>
+                        <span id="state-pending" class="state-count">{{.PeerStates.Pending}}</span>
+                    </div>
+                    <div class="peer-state">
+                        <span class="state-dot state-degraded"></span>
+                        <span class="state-label">Degraded</span>
+                        <span id="state-degraded" class="state-count">{{.PeerStates.Degraded}}</span>
+                    </div>
+                    <div class="peer-state">
+                        <span class="state-dot state-stale"></span>
+                        <span class="state-label">Stale</span>
+                        <span id="state-stale" class="state-count">{{.PeerStates.Stale}}</span>
+                    </div>
                 </div>
-                <div class="stat-row">
-                    <span class="stat-label">Known Galaxy</span>
-                    <span id="stat-galaxy" class="stat-value">{{.TotalSystems}} systems</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Max Peers</span>
-                    <span class="stat-value">{{.MaxPeers}} ({{.PeerCapacityDesc}})</span>
+                <div class="stat-row" style="margin-top: 12px;">
+                    <span class="stat-label">Peer Capacity</span>
+                    <span class="stat-value">{{.MaxPeers}} max ({{.PeerCapacityDesc}})</span>
                 </div>
                 <div class="stat-row">
                     <span class="stat-label">Attestations</span>
@@ -680,9 +800,9 @@ const indexTemplate = `<!DOCTYPE html>
                 <div id="peer-list" class="peer-list">
                     {{range .Peers}}
                     <div class="peer-item">
-                        <div class="peer-name">{{.Name}}</div>
-                        <div class="peer-id">{{.ID}}</div>
-                        <div class="coords">({{printf "%.1f" .X}}, {{printf "%.1f" .Y}}, {{printf "%.1f" .Z}})</div>
+                        <div class="peer-name">{{.System.Name}}{{if .IsNew}} <span class="new-badge">NEW</span>{{end}}</div>
+                        <div class="peer-id">{{.System.ID}}</div>
+                        <div class="peer-meta"><span class="coords">({{printf "%.1f" .System.X}}, {{printf "%.1f" .System.Y}}, {{printf "%.1f" .System.Z}})</span> · <span class="first-seen">First seen: {{.FirstSeenStr}}</span></div>
                     </div>
                     {{else}}
                     <p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>
@@ -769,6 +889,7 @@ const indexTemplate = `<!DOCTYPE html>
             function onMouseDown(event) {
                 if (!scope.enabled) return;
                 event.preventDefault();
+                markMapInteraction();
                 if (event.button === 0) {
                     state = STATE.ROTATE;
                     rotateStart.set(event.clientX, event.clientY);
@@ -822,6 +943,7 @@ const indexTemplate = `<!DOCTYPE html>
             function onWheel(event) {
                 if (!scope.enabled || !scope.enableZoom) return;
                 event.preventDefault();
+                markMapInteraction();
                 if (event.deltaY < 0) scale *= Math.pow(0.95, scope.zoomSpeed);
                 else if (event.deltaY > 0) scale /= Math.pow(0.95, scope.zoomSpeed);
                 scope.update();
@@ -835,9 +957,16 @@ const indexTemplate = `<!DOCTYPE html>
 
         const knownSystems = [
             {{range .KnownSystems}}
-            {id: "{{.ID}}", name: "{{.Name}}", x: {{.X}}, y: {{.Y}}, z: {{.Z}}, color: "{{.Stars.Primary.Color}}", starClass: "{{.Stars.Primary.Class}}", starDesc: "{{.Stars.Primary.Description}}"},
+            {id: "{{.System.ID}}", name: "{{.System.Name}}", x: {{.System.X}}, y: {{.System.Y}}, z: {{.System.Z}}, color: "{{.System.Stars.Primary.Color}}", starClass: "{{.System.Stars.Primary.Class}}", starDesc: "{{.System.Stars.Primary.Description}}", learnedAt: {{.LearnedAt}}},
             {{end}}
         ];
+
+        // Check if a system was learned within the last 24 hours
+        function isNewSystem(learnedAt) {
+            if (!learnedAt) return false;
+            const oneDayAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
+            return learnedAt > oneDayAgo;
+        }
         const selfSystem = {
             id: "{{.System.ID}}",
             name: "{{.System.Name}}",
@@ -858,6 +987,26 @@ const indexTemplate = `<!DOCTYPE html>
         let cachedConnections = [];
         let selfRing = null;
         let ringPulseTime = 0;
+        let labelsContainer = null;
+        let labelElements = [];
+        let systemById = {};
+        let connectionCounts = {};
+
+        // Mutable data that gets refreshed
+        let currentKnownSystems = [...knownSystems];
+        let currentLivePeerIDs = new Set(livePeerIDs);
+
+        // Track user interaction to avoid disrupting browsing
+        let lastMapInteraction = 0;
+        const MAP_INTERACTION_COOLDOWN = 60000; // Don't refresh map for 60s after interaction
+
+        function markMapInteraction() {
+            lastMapInteraction = Date.now();
+        }
+
+        function isUserBrowsingMap() {
+            return (Date.now() - lastMapInteraction) < MAP_INTERACTION_COOLDOWN;
+        }
 
         async function fetchConnections() {
             try {
@@ -997,6 +1146,157 @@ const indexTemplate = `<!DOCTYPE html>
             controls.update();
         }
 
+        function clearMapContent() {
+            // Remove existing stars
+            starMeshes.forEach(mesh => scene.remove(mesh));
+            starMeshes = [];
+
+            // Remove self ring
+            if (selfRing) {
+                scene.remove(selfRing);
+                selfRing = null;
+            }
+
+            // Remove connection lines
+            connectionLines.forEach(line => scene.remove(line));
+            connectionLines = [];
+
+            // Clear labels
+            labelElements.forEach(item => item.element.remove());
+            labelElements = [];
+        }
+
+        function rebuildMapContent() {
+            if (!scene || !labelsContainer) return;
+
+            clearMapContent();
+
+            const allSystems = [selfSystem, ...currentKnownSystems];
+            systemById = {};
+            allSystems.forEach(s => { systemById[s.id] = s; });
+
+            // Add stars
+            allSystems.forEach(sys => {
+                const isSelf = sys.id === selfSystem.id;
+                const isLive = currentLivePeerIDs.has(sys.id);
+                const isCached = !isSelf && !isLive;
+                const size = isSelf ? 40 : (isLive ? 28 : 22);
+                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached, sys.starClass);
+                star.position.set(sys.x, sys.y, sys.z);
+                star.userData = { system: sys, isSelf: isSelf, isLive: isLive, isCached: isCached };
+                scene.add(star);
+                starMeshes.push(star);
+
+                // Add ring pulse effect for self
+                if (isSelf) {
+                    const ringGeometry = new THREE.RingGeometry(18, 22, 32);
+                    const ringMaterial = new THREE.MeshBasicMaterial({
+                        color: 0x60a5fa,
+                        transparent: true,
+                        opacity: 0.6,
+                        side: THREE.DoubleSide
+                    });
+                    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ring.position.set(sys.x, sys.y, sys.z);
+                    ring.userData = { startScale: 1, maxScale: 3.5 };
+                    scene.add(ring);
+                    selfRing = ring;
+                }
+
+                // Create HTML label
+                const label = document.createElement('div');
+                const isNew = !isSelf && isNewSystem(sys.learnedAt);
+                label.innerHTML = sys.name + (isNew ? ' <span style="background:#22c55e;color:#000;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:4px;">NEW</span>' : '');
+                label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
+                if (isSelf) {
+                    label.style.color = '#60a5fa';
+                    label.style.fontWeight = '500';
+                } else if (isLive) {
+                    label.style.color = '#4ade80';
+                } else {
+                    label.style.color = '#666';
+                }
+                labelsContainer.appendChild(label);
+                labelElements.push({ element: label, position: star.position, isSelf: isSelf });
+            });
+
+            // Build reciprocity map
+            const edgeSet = new Set();
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    edgeSet.add(conn.from_id + ':' + conn.to_id);
+                });
+            }
+
+            function isReciprocal(fromId, toId) {
+                return edgeSet.has(fromId + ':' + toId) && edgeSet.has(toId + ':' + fromId);
+            }
+
+            // Build connection count per system
+            connectionCounts = {};
+            if (cachedConnections) {
+                cachedConnections.forEach(conn => {
+                    connectionCounts[conn.from_id] = (connectionCounts[conn.from_id] || 0) + 1;
+                    connectionCounts[conn.to_id] = (connectionCounts[conn.to_id] || 0) + 1;
+                });
+            }
+
+            // Add connection lines - ONLY show our direct peer connections by default
+            // Other connections are shown on hover
+            const processedEdges = new Set();
+            if (cachedConnections && cachedConnections.length > 0) {
+                cachedConnections.forEach(conn => {
+                    const from = systemById[conn.from_id];
+                    const to = systemById[conn.to_id];
+                    if (!from || !to) return;
+
+                    // Avoid drawing same edge twice
+                    const edgeKey = [conn.from_id, conn.to_id].sort().join(':');
+                    if (processedEdges.has(edgeKey)) return;
+                    processedEdges.add(edgeKey);
+
+                    // Only draw lines involving ourselves (direct peers)
+                    const involvesUs = conn.from_id === selfSystem.id || conn.to_id === selfSystem.id;
+
+                    const reciprocal = isReciprocal(conn.from_id, conn.to_id);
+                    const points = [
+                        new THREE.Vector3(from.x, from.y, from.z),
+                        new THREE.Vector3(to.x, to.y, to.z)
+                    ];
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+                    let line;
+                    if (reciprocal) {
+                        const material = new THREE.LineBasicMaterial({
+                            color: 0x64c8ff,
+                            transparent: true,
+                            opacity: involvesUs ? 0.5 : 0
+                        });
+                        line = new THREE.Line(geometry, material);
+                    } else {
+                        const material = new THREE.LineDashedMaterial({
+                            color: 0xffaa44,
+                            transparent: true,
+                            opacity: involvesUs ? 0.4 : 0,
+                            dashSize: 30,
+                            gapSize: 20
+                        });
+                        line = new THREE.Line(geometry, material);
+                        line.computeLineDistances();
+                    }
+                    line.userData = {
+                        fromId: conn.from_id,
+                        toId: conn.to_id,
+                        reciprocal: reciprocal,
+                        involvesUs: involvesUs,
+                        baseOpacity: involvesUs ? (reciprocal ? 0.5 : 0.4) : 0
+                    };
+                    scene.add(line);
+                    connectionLines.push(line);
+                });
+            }
+        }
+
         async function initGalaxyMap() {
             const container = document.getElementById('galaxy-map');
             if (!container) return;
@@ -1046,8 +1346,8 @@ const indexTemplate = `<!DOCTYPE html>
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#60a5fa;">●</span> You</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#4ade80;">●</span> Live peers</div>' +
                 '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#996666;">●</span> Cached</div>' +
-                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Reciprocal</div>' +
-                '<div style="display:flex;align-items:center;gap:6px;"><span style="color:#ffaa44;">┄</span> One-way</div>';
+                '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="color:#64c8ff;">―</span> Your connections</div>' +
+                '<div style="display:flex;align-items:center;gap:6px;color:#666;font-size:10px;">Hover to see other connections</div>';
             container.appendChild(legend);
             
             // Add tooltip
@@ -1062,128 +1362,13 @@ const indexTemplate = `<!DOCTYPE html>
             hint.textContent = 'Left-drag: rotate • Right-drag: pan • Scroll: zoom';
             container.appendChild(hint);
 
-            const allSystems = [selfSystem, ...knownSystems];
-            const systemById = {};
-            allSystems.forEach(s => { systemById[s.id] = s; });
-
             // Labels container
-            const labelsContainer = document.createElement('div');
+            labelsContainer = document.createElement('div');
             labelsContainer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:hidden;';
             container.appendChild(labelsContainer);
-            
-            const labelElements = [];
 
-            // Add stars
-            allSystems.forEach(sys => {
-                const isSelf = sys.id === selfSystem.id;
-                const isLive = livePeerIDs.has(sys.id);
-                const isCached = !isSelf && !isLive;
-                const size = isSelf ? 40 : (isLive ? 28 : 22);
-                const star = createStarSprite(sys.color || '#ffffff', size, isSelf, isCached, sys.starClass);
-                star.position.set(sys.x, sys.y, sys.z);
-                star.userData = { system: sys, isSelf: isSelf, isLive: isLive, isCached: isCached };
-                scene.add(star);
-                starMeshes.push(star);
-                
-                // Add ring pulse effect for self
-                if (isSelf) {
-                    const ringGeometry = new THREE.RingGeometry(18, 22, 32);
-                    const ringMaterial = new THREE.MeshBasicMaterial({ 
-                        color: 0x60a5fa, 
-                        transparent: true, 
-                        opacity: 0.6,
-                        side: THREE.DoubleSide
-                    });
-                    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-                    ring.position.set(sys.x, sys.y, sys.z);
-                    ring.userData = { startScale: 1, maxScale: 3.5 };
-                    scene.add(ring);
-                    selfRing = ring;
-                }
-                
-                // Create HTML label
-                const label = document.createElement('div');
-                label.textContent = sys.name;
-                label.style.cssText = 'position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%);';
-                if (isSelf) {
-                    label.style.color = '#60a5fa';
-                    label.style.fontWeight = '500';
-                } else if (isLive) {
-                    label.style.color = '#4ade80';
-                } else {
-                    label.style.color = '#666';
-                }
-                labelsContainer.appendChild(label);
-                labelElements.push({ element: label, position: star.position, isSelf: isSelf });
-            });
-
-            // Build reciprocity map
-            const edgeSet = new Set();
-            if (cachedConnections) {
-                cachedConnections.forEach(conn => {
-                    edgeSet.add(conn.from_id + ':' + conn.to_id);
-                });
-            }
-            
-            function isReciprocal(fromId, toId) {
-                return edgeSet.has(fromId + ':' + toId) && edgeSet.has(toId + ':' + fromId);
-            }
-
-            // Build connection count per system
-            const connectionCounts = {};
-            if (cachedConnections) {
-                cachedConnections.forEach(conn => {
-                    connectionCounts[conn.from_id] = (connectionCounts[conn.from_id] || 0) + 1;
-                    connectionCounts[conn.to_id] = (connectionCounts[conn.to_id] || 0) + 1;
-                });
-            }
-
-            // Add connection lines
-            const processedEdges = new Set();
-            if (cachedConnections && cachedConnections.length > 0) {
-                cachedConnections.forEach(conn => {
-                    const from = systemById[conn.from_id];
-                    const to = systemById[conn.to_id];
-                    if (!from || !to) return;
-                    
-                    // Avoid drawing same edge twice
-                    const edgeKey = [conn.from_id, conn.to_id].sort().join(':');
-                    if (processedEdges.has(edgeKey)) return;
-                    processedEdges.add(edgeKey);
-                    
-                    const reciprocal = isReciprocal(conn.from_id, conn.to_id);
-                    const points = [
-                        new THREE.Vector3(from.x, from.y, from.z),
-                        new THREE.Vector3(to.x, to.y, to.z)
-                    ];
-                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-                    
-                    let line;
-                    if (reciprocal) {
-                        // Solid line for reciprocal connections
-                        const material = new THREE.LineBasicMaterial({ 
-                            color: 0x64c8ff, 
-                            transparent: true, 
-                            opacity: 0.35
-                        });
-                        line = new THREE.Line(geometry, material);
-                    } else {
-                        // Dashed line for one-way connections
-                        const material = new THREE.LineDashedMaterial({ 
-                            color: 0xffaa44, 
-                            transparent: true, 
-                            opacity: 0.3,
-                            dashSize: 30,
-                            gapSize: 20
-                        });
-                        line = new THREE.Line(geometry, material);
-                        line.computeLineDistances();
-                    }
-                    line.userData = { fromId: conn.from_id, toId: conn.to_id, reciprocal: reciprocal };
-                    scene.add(line);
-                    connectionLines.push(line);
-                });
-            }
+            // Build initial map content (stars, connections, labels)
+            rebuildMapContent();
 
             // Add subtle starfield background
             const starfieldGeo = new THREE.BufferGeometry();
@@ -1210,13 +1395,17 @@ const indexTemplate = `<!DOCTYPE html>
             
             function highlightConnections(systemId) {
                 connectionLines.forEach(line => {
-                    if (systemId && (line.userData.fromId === systemId || line.userData.toId === systemId)) {
+                    const involvesHovered = systemId && (line.userData.fromId === systemId || line.userData.toId === systemId);
+
+                    if (involvesHovered) {
+                        // Highlight connections involving hovered system
                         line.material.opacity = line.userData.reciprocal ? 0.8 : 0.6;
                         if (line.userData.reciprocal) {
                             line.material.color.setHex(0x60a5fa);
                         }
                     } else {
-                        line.material.opacity = line.userData.reciprocal ? 0.35 : 0.3;
+                        // Return to base state: only our direct connections visible
+                        line.material.opacity = line.userData.baseOpacity;
                         if (line.userData.reciprocal) {
                             line.material.color.setHex(0x64c8ff);
                         }
@@ -1359,13 +1548,20 @@ const indexTemplate = `<!DOCTYPE html>
                 if (stats.database_size) {
                     document.getElementById('stat-dbsize').textContent = stats.database_size;
                 }
-                
+
+                // Update peer state breakdown
+                if (stats.peer_states) {
+                    document.getElementById('state-active').textContent = stats.peer_states.active || 0;
+                    document.getElementById('state-pending').textContent = stats.peer_states.pending || 0;
+                    document.getElementById('state-degraded').textContent = stats.peer_states.degraded || 0;
+                    document.getElementById('state-stale').textContent = stats.peer_states.stale || 0;
+                }
+
                 // Fetch peers for routing table
                 const peersResp = await fetch('/api/peers');
                 const peers = await peersResp.json() || [];
-                
+
                 const routingSize = peers.length;
-                document.getElementById('stat-routing').textContent = routingSize + ' nodes';
                 document.getElementById('routing-title').textContent = 'Routing Table (' + routingSize + ' nodes)';
                 
                 // Update health based on routing table size
@@ -1381,29 +1577,67 @@ const indexTemplate = `<!DOCTYPE html>
                     healthEl.className = 'stat-value health-critical';
                 }
                 
-                // Update peer list
+                // Update peer list (sorted alphabetically)
                 const peerListEl = document.getElementById('peer-list');
+                const oneDayAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
+                const formatDate = (ts) => {
+                    if (!ts) return 'Unknown';
+                    const d = new Date(ts * 1000);
+                    const mm = String(d.getMonth() + 1).padStart(2, '0');
+                    const dd = String(d.getDate()).padStart(2, '0');
+                    const yy = String(d.getFullYear()).slice(-2);
+                    return mm + '/' + dd + '/' + yy;
+                };
                 if (peers.length === 0) {
                     peerListEl.innerHTML = '<p style="color: #666; padding: 20px; text-align: center;">No peers in routing table</p>';
                 } else {
-                    peerListEl.innerHTML = peers.map(p => 
-                        '<div class="peer-item">' +
-                        '<div class="peer-name">' + p.name + '</div>' +
-                        '<div class="peer-id">' + p.id + '</div>' +
-                        '<div class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</div>' +
-                        '</div>'
-                    ).join('');
+                    const sortedPeers = [...peers].sort((a, b) => a.name.localeCompare(b.name));
+                    peerListEl.innerHTML = sortedPeers.map(p => {
+                        const isNew = p.learned_at && p.learned_at > oneDayAgo;
+                        const newBadge = isNew ? ' <span class="new-badge">NEW</span>' : '';
+                        const firstSeen = formatDate(p.learned_at);
+                        return '<div class="peer-item">' +
+                            '<div class="peer-name">' + p.name + newBadge + '</div>' +
+                            '<div class="peer-id">' + p.id + '</div>' +
+                            '<div class="peer-meta"><span class="coords">(' + p.x.toFixed(1) + ', ' + p.y.toFixed(1) + ', ' + p.z.toFixed(1) + ')</span> · <span class="first-seen">First seen: ' + firstSeen + '</span></div>' +
+                            '</div>';
+                    }).join('');
                 }
                 
-                // Fetch known systems for counts
+                // Fetch known systems for counts AND map update
                 const systemsResp = await fetch('/api/known-systems');
                 const systems = await systemsResp.json() || [];
-                
-                document.getElementById('stat-cache').textContent = systems.length + ' systems';
+
                 const totalSystems = systems.length + 1;
-                document.getElementById('stat-galaxy').textContent = totalSystems + ' systems';
+                document.getElementById('stat-galaxy').textContent = totalSystems + ' total';
                 document.getElementById('galaxy-title').textContent = 'Galaxy Map (' + totalSystems + ' systems)';
-                
+
+                // Only update map data if user isn't actively browsing
+                if (!isUserBrowsingMap()) {
+                    // Update live peer IDs set from peers response
+                    currentLivePeerIDs = new Set(peers.map(p => p.id));
+
+                    // Update known systems for map (convert to map format)
+                    currentKnownSystems = systems.map(s => ({
+                        id: s.id,
+                        name: s.name,
+                        x: s.x,
+                        y: s.y,
+                        z: s.z,
+                        color: s.stars?.primary?.color || '#ffffff',
+                        starClass: s.stars?.primary?.class || 'M',
+                        starDesc: s.stars?.primary?.description || '',
+                        learnedAt: s.learned_at || 0
+                    }));
+
+                    // Fetch fresh connections
+                    const connectionsResp = await fetch('/api/connections');
+                    cachedConnections = await connectionsResp.json() || [];
+
+                    // Rebuild the 3D map with updated data
+                    rebuildMapContent();
+                }
+
             } catch (err) {
                 console.error('Failed to refresh stats:', err);
             }
@@ -1416,9 +1650,9 @@ const indexTemplate = `<!DOCTYPE html>
             const data = {
                 exported_at: new Date().toISOString(),
                 local_system: selfSystem,
-                known_systems: knownSystems,
+                known_systems: currentKnownSystems,
                 connections: cachedConnections,
-                live_peer_ids: Array.from(livePeerIDs)
+                live_peer_ids: Array.from(currentLivePeerIDs)
             };
             
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });

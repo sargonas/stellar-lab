@@ -429,38 +429,6 @@ func (s *Storage) SaveAttestation(attestation *Attestation, receivedBy uuid.UUID
 	return err
 }
 
-// GetAttestations retrieves all attestations for a system
-func (s *Storage) GetAttestations(systemID uuid.UUID) ([]*Attestation, error) {
-	rows, err := s.db.Query(`
-		SELECT from_system_id, to_system_id, timestamp, message_type, signature, public_key
-		FROM attestations
-		WHERE from_system_id = ? OR to_system_id = ?
-		ORDER BY timestamp ASC
-	`, systemID.String(), systemID.String())
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var attestations []*Attestation
-	for rows.Next() {
-		var att Attestation
-		var fromID, toID string
-
-		err := rows.Scan(&fromID, &toID, &att.Timestamp, &att.MessageType, &att.Signature, &att.PublicKey)
-		if err != nil {
-			continue
-		}
-
-		att.FromSystemID = uuid.MustParse(fromID)
-		att.ToSystemID = uuid.MustParse(toID)
-		attestations = append(attestations, &att)
-	}
-
-	return attestations, nil
-}
-
 // GetAttestationCount returns the count of verified attestations
 func (s *Storage) GetAttestationCount(systemID uuid.UUID) (int, error) {
 	var count int
@@ -471,14 +439,6 @@ func (s *Storage) GetAttestationCount(systemID uuid.UUID) (int, error) {
 	`, systemID.String(), systemID.String()).Scan(&count)
 
 	return count, err
-}
-
-// IncrementPeerMessageCount tracks communication frequency
-func (s *Storage) IncrementPeerMessageCount(peerID uuid.UUID) error {
-	_, err := s.db.Exec(`
-		UPDATE peers SET total_messages = total_messages + 1 WHERE system_id = ?
-	`, peerID.String())
-	return err
 }
 
 // SavePeerSystem caches a peer's full system info
@@ -492,46 +452,50 @@ func (s *Storage) SavePeerSystem(sys *System) error {
 		sponsorID = &str
 	}
 
-	// Check existing version first
-	var existingVersion int64
-	err := s.db.QueryRow(`SELECT info_version FROM peer_systems WHERE id = ?`, 
-		sys.ID.String()).Scan(&existingVersion)
-	
-	if err == sql.ErrNoRows {
-		// New entry - insert it
-		_, err = s.db.Exec(`
-			INSERT INTO peer_systems (
-				id, name, x, y, z,
-				star_class, star_color, star_description,
-				peer_address, sponsor_id, info_version, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
-			sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
-			sys.PeerAddress, sponsorID, sys.InfoVersion, time.Now().Unix())
-		return err
-	} else if err != nil {
+	now := time.Now().Unix()
+
+	// Use INSERT OR REPLACE with version check to avoid race condition
+	// This is atomic - no gap between check and write
+	result, err := s.db.Exec(`
+		INSERT INTO peer_systems (
+			id, name, x, y, z,
+			star_class, star_color, star_description,
+			peer_address, sponsor_id, info_version, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			x = excluded.x,
+			y = excluded.y,
+			z = excluded.z,
+			star_class = excluded.star_class,
+			star_color = excluded.star_color,
+			star_description = excluded.star_description,
+			peer_address = excluded.peer_address,
+			sponsor_id = excluded.sponsor_id,
+			info_version = excluded.info_version,
+			updated_at = excluded.updated_at
+		WHERE
+			-- Accept if incoming version is newer
+			excluded.info_version > peer_systems.info_version
+			-- OR incoming is versioned and existing is legacy (0)
+			OR (excluded.info_version > 0 AND peer_systems.info_version = 0)
+			-- OR both are legacy (0) - can't tell which is newer, accept update
+			OR (excluded.info_version = 0 AND peer_systems.info_version = 0)
+	`, sys.ID.String(), sys.Name, sys.X, sys.Y, sys.Z,
+		sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
+		sys.PeerAddress, sponsorID, sys.InfoVersion, now)
+
+	if err != nil {
 		return err
 	}
 
-	// Existing entry - check version
-	// Accept if: incoming > existing, OR incoming is versioned and existing is legacy (0)
-	// For legacy-to-legacy (both 0), accept update (can't tell which is newer)
-	if sys.InfoVersion > existingVersion || 
-	   (sys.InfoVersion > 0 && existingVersion == 0) ||
-	   (sys.InfoVersion == 0 && existingVersion == 0) {
-		_, err = s.db.Exec(`
-			UPDATE peer_systems SET
-				name = ?, x = ?, y = ?, z = ?,
-				star_class = ?, star_color = ?, star_description = ?,
-				peer_address = ?, sponsor_id = ?, info_version = ?, updated_at = ?
-			WHERE id = ?
-		`, sys.Name, sys.X, sys.Y, sys.Z,
-			sys.Stars.Primary.Class, sys.Stars.Primary.Color, sys.Stars.Primary.Description,
-			sys.PeerAddress, sponsorID, sys.InfoVersion, time.Now().Unix(), sys.ID.String())
-		return err
+	// Check if the update was actually applied (for debugging)
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		// Version check prevented update - stale data
+		return nil
 	}
 
-	// Stale data - don't update
 	return nil
 }
 
@@ -542,6 +506,12 @@ func (s *Storage) TouchPeerSystem(systemID uuid.UUID) error {
 	now := time.Now().Unix()
 	_, err := s.db.Exec(`UPDATE peer_systems SET last_verified = ?, updated_at = ? WHERE id = ?`,
 		now, now, systemID.String())
+	return err
+}
+
+// DeletePeerSystem removes a peer system from the database
+func (s *Storage) DeletePeerSystem(systemID uuid.UUID) error {
+	_, err := s.db.Exec(`DELETE FROM peer_systems WHERE id = ?`, systemID.String())
 	return err
 }
 
@@ -608,16 +578,6 @@ func (s *Storage) GetDatabaseStats() (map[string]interface{}, error) {
     return stats, nil
 }
 
-// CountKnownSystems returns the total number of unique systems we've heard about
-func (s *Storage) CountKnownSystems() int {
-    var count int
-    err := s.db.QueryRow(`SELECT COUNT(*) FROM peer_systems`).Scan(&count)
-    if err != nil {
-        return 0
-    }
-    return count
-}
-
 // GetAllPeerSystems returns all cached peer system info (not just direct peers)
 func (s *Storage) GetAllPeerSystems() ([]*System, error) {
     rows, err := s.db.Query(`
@@ -645,17 +605,73 @@ func (s *Storage) GetAllPeerSystems() ([]*System, error) {
 
         sys.ID = uuid.MustParse(idStr)
         sys.PeerAddress = peerAddress
-        
+
         // Load sponsor ID if present
         if sponsorIDStr.Valid && sponsorIDStr.String != "" {
             sponsorID := uuid.MustParse(sponsorIDStr.String)
             sys.SponsorID = &sponsorID
         }
-        
+
         systems = append(systems, &sys)
     }
 
     return systems, nil
+}
+
+// PeerSystemWithMeta contains a system and its storage metadata
+type PeerSystemWithMeta struct {
+    System       *System
+    LastVerified int64 // Unix timestamp, 0 if never verified
+    UpdatedAt    int64 // Unix timestamp of last update
+}
+
+// GetAllPeerSystemsWithMeta returns all cached peer systems with verification timestamps
+// Used during cache loading to preserve actual age information
+func (s *Storage) GetAllPeerSystemsWithMeta() ([]*PeerSystemWithMeta, error) {
+    rows, err := s.db.Query(`
+        SELECT id, name, x, y, z, star_class, star_color, star_description,
+               peer_address, sponsor_id, info_version,
+               COALESCE(last_verified, 0), COALESCE(updated_at, 0)
+        FROM peer_systems
+    `)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    var results []*PeerSystemWithMeta
+    for rows.Next() {
+        var sys System
+        var idStr string
+        var peerAddress string
+        var sponsorIDStr sql.NullString
+        var lastVerified, updatedAt int64
+
+        err := rows.Scan(&idStr, &sys.Name, &sys.X, &sys.Y, &sys.Z,
+            &sys.Stars.Primary.Class, &sys.Stars.Primary.Color, &sys.Stars.Primary.Description,
+            &peerAddress, &sponsorIDStr, &sys.InfoVersion,
+            &lastVerified, &updatedAt)
+        if err != nil {
+            continue
+        }
+
+        sys.ID = uuid.MustParse(idStr)
+        sys.PeerAddress = peerAddress
+
+        // Load sponsor ID if present
+        if sponsorIDStr.Valid && sponsorIDStr.String != "" {
+            sponsorID := uuid.MustParse(sponsorIDStr.String)
+            sys.SponsorID = &sponsorID
+        }
+
+        results = append(results, &PeerSystemWithMeta{
+            System:       &sys,
+            LastVerified: lastVerified,
+            UpdatedAt:    updatedAt,
+        })
+    }
+
+    return results, nil
 }
 
 // SavePeerConnections stores a system's peer list (learned from peer exchange)
@@ -771,59 +787,6 @@ type TopologyEdge struct {
 	ToName   string `json:"to_name"`
 }
 
-// GetRecentTopology returns inferred connections from recent attestations
-func (s *Storage) GetRecentTopology(maxAge time.Duration) ([]TopologyEdge, error) {
-	cutoff := time.Now().Add(-maxAge).Unix()
-
-	rows, err := s.db.Query(`
-		SELECT DISTINCT from_system_id, to_system_id
-		FROM attestations
-		WHERE timestamp > ?
-	`, cutoff)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	// Collect unique edges (deduplicate A→B and B→A)
-	edgeMap := make(map[string]TopologyEdge)
-
-	for rows.Next() {
-		var fromID, toID string
-		if err := rows.Scan(&fromID, &toID); err != nil {
-			continue
-		}
-
-		// Create canonical edge key (smaller ID first) to deduplicate
-		var key string
-		if fromID < toID {
-			key = fromID + ":" + toID
-		} else {
-			key = toID + ":" + fromID
-		}
-
-		if _, exists := edgeMap[key]; !exists {
-			fromName := s.getSystemName(fromID)
-			toName := s.getSystemName(toID)
-
-			edgeMap[key] = TopologyEdge{
-				FromID:   fromID,
-				FromName: fromName,
-				ToID:     toID,
-				ToName:   toName,
-			}
-		}
-	}
-
-	// Convert map to slice
-	edges := make([]TopologyEdge, 0, len(edgeMap))
-	for _, edge := range edgeMap {
-		edges = append(edges, edge)
-	}
-
-	return edges, nil
-}
-
 // getSystemName looks up a system name from peer_systems cache
 func (s *Storage) getSystemName(systemID string) string {
 	var name string
@@ -895,21 +858,6 @@ func (s *Storage) SaveCreditBalance(balance *CreditBalance) error {
 	return err
 }
 
-// AddCredits adds earned credits to a system's balance
-func (s *Storage) AddCredits(systemID uuid.UUID, amount int64) error {
-	_, err := s.db.Exec(`
-		INSERT INTO credit_balance (system_id, balance, total_earned, total_sent, total_received, last_calculated, longevity_start, updated_at)
-		VALUES (?, ?, ?, 0, 0, ?, 0, ?)
-		ON CONFLICT(system_id) DO UPDATE SET
-			balance = balance + ?,
-			total_earned = total_earned + ?,
-			last_calculated = ?,
-			updated_at = ?
-	`, systemID.String(), amount, amount, time.Now().Unix(), time.Now().Unix(),
-		amount, amount, time.Now().Unix(), time.Now().Unix())
-	return err
-}
-
 // GetAttestationsSince retrieves attestations since a given timestamp
 // Returns attestations where this system was the receiver (for credit calculation)
 func (s *Storage) GetAttestationsSince(systemID uuid.UUID, since int64) ([]*Attestation, error) {
@@ -948,162 +896,6 @@ func (s *Storage) GetAttestationsSince(systemID uuid.UUID, since int64) ([]*Atte
 	return attestations, nil
 }
 
-// SaveCreditTransfer persists a credit transfer
-func (s *Storage) SaveCreditTransfer(transfer *CreditTransfer) error {
-	var proofHash string
-	if transfer.Proof != nil {
-		proofHash = transfer.Proof.ProofHash()
-	}
-	
-	_, err := s.db.Exec(`
-		INSERT INTO credit_transfers (id, from_system_id, to_system_id, amount, memo, timestamp, signature, public_key, proof_hash, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, transfer.ID.String(), transfer.FromSystemID.String(), transfer.ToSystemID.String(),
-		transfer.Amount, transfer.Memo, transfer.Timestamp, transfer.Signature, transfer.PublicKey, proofHash, time.Now().Unix())
-	return err
-}
-
-// GetCreditTransfers retrieves transfers for a system (sent or received)
-func (s *Storage) GetCreditTransfers(systemID uuid.UUID, limit int) ([]*CreditTransfer, error) {
-	rows, err := s.db.Query(`
-		SELECT id, from_system_id, to_system_id, amount, memo, timestamp, signature, public_key
-		FROM credit_transfers
-		WHERE from_system_id = ? OR to_system_id = ?
-		ORDER BY timestamp DESC
-		LIMIT ?
-	`, systemID.String(), systemID.String(), limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var transfers []*CreditTransfer
-	for rows.Next() {
-		var t CreditTransfer
-		var idStr, fromStr, toStr string
-		if err := rows.Scan(&idStr, &fromStr, &toStr, &t.Amount, &t.Memo, &t.Timestamp, &t.Signature, &t.PublicKey); err != nil {
-			continue
-		}
-		t.ID, _ = uuid.Parse(idStr)
-		t.FromSystemID, _ = uuid.Parse(fromStr)
-		t.ToSystemID, _ = uuid.Parse(toStr)
-		transfers = append(transfers, &t)
-	}
-
-	return transfers, nil
-}
-
-// GetAllAttestationsForSystem retrieves all attestations where the system was the recipient
-// Used for building credit proofs
-func (s *Storage) GetAllAttestationsForSystem(systemID uuid.UUID) ([]*Attestation, error) {
-	rows, err := s.db.Query(`
-		SELECT from_system_id, to_system_id, timestamp, message_type, signature, public_key
-		FROM attestations
-		WHERE to_system_id = ?
-		ORDER BY timestamp DESC
-	`, systemID.String())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var attestations []*Attestation
-	for rows.Next() {
-		var fromID, toID, msgType, sig, pubKey string
-		var timestamp int64
-		if err := rows.Scan(&fromID, &toID, &timestamp, &msgType, &sig, &pubKey); err != nil {
-			continue
-		}
-
-		fromUUID, _ := uuid.Parse(fromID)
-		toUUID, _ := uuid.Parse(toID)
-
-		attestations = append(attestations, &Attestation{
-			FromSystemID: fromUUID,
-			ToSystemID:   toUUID,
-			Timestamp:    timestamp,
-			MessageType:  msgType,
-			Signature:    sig,
-			PublicKey:    pubKey,
-		})
-	}
-
-	return attestations, nil
-}
-
-// SaveVerifiedTransfer stores a transfer that we've verified from another system
-func (s *Storage) SaveVerifiedTransfer(transfer *CreditTransfer) error {
-	proofHash := ""
-	if transfer.Proof != nil {
-		proofHash = transfer.Proof.ProofHash()
-	}
-	
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO verified_transfers (id, from_system_id, to_system_id, amount, timestamp, signature, proof_hash, verified_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, transfer.ID.String(), transfer.FromSystemID.String(), transfer.ToSystemID.String(),
-		transfer.Amount, transfer.Timestamp, transfer.Signature, proofHash, time.Now().Unix())
-	return err
-}
-
-// GetVerifiedTransfersFrom retrieves all verified transfers sent by a system
-// Used for double-spend detection
-func (s *Storage) GetVerifiedTransfersFrom(systemID uuid.UUID) ([]*CreditTransfer, error) {
-	rows, err := s.db.Query(`
-		SELECT id, from_system_id, to_system_id, amount, timestamp, signature
-		FROM verified_transfers
-		WHERE from_system_id = ?
-		ORDER BY timestamp DESC
-	`, systemID.String())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var transfers []*CreditTransfer
-	for rows.Next() {
-		var t CreditTransfer
-		var idStr, fromStr, toStr string
-		if err := rows.Scan(&idStr, &fromStr, &toStr, &t.Amount, &t.Timestamp, &t.Signature); err != nil {
-			continue
-		}
-		t.ID, _ = uuid.Parse(idStr)
-		t.FromSystemID, _ = uuid.Parse(fromStr)
-		t.ToSystemID, _ = uuid.Parse(toStr)
-		transfers = append(transfers, &t)
-	}
-
-	return transfers, nil
-}
-
-// GetAllVerifiedTransfers retrieves all verified transfers we know about
-// Used for comprehensive double-spend checking
-func (s *Storage) GetAllVerifiedTransfers() ([]*CreditTransfer, error) {
-	rows, err := s.db.Query(`
-		SELECT id, from_system_id, to_system_id, amount, timestamp, signature
-		FROM verified_transfers
-		ORDER BY timestamp DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var transfers []*CreditTransfer
-	for rows.Next() {
-		var t CreditTransfer
-		var idStr, fromStr, toStr string
-		if err := rows.Scan(&idStr, &fromStr, &toStr, &t.Amount, &t.Timestamp, &t.Signature); err != nil {
-			continue
-		}
-		t.ID, _ = uuid.Parse(idStr)
-		t.FromSystemID, _ = uuid.Parse(fromStr)
-		t.ToSystemID, _ = uuid.Parse(toStr)
-		transfers = append(transfers, &t)
-	}
-
-	return transfers, nil
-}
 
 // =============================================================================
 // IDENTITY BINDING (UUID spoofing prevention)

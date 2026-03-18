@@ -1,14 +1,202 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// === Seed Node Management ===
+
+// SeedNodeListURL is the URL to fetch the seed node list from
+const SeedNodeListURL = "https://raw.githubusercontent.com/sargonas/stellar-lab/main/SEED-NODES.txt"
+
+// FallbackSeedNodes are used if GitHub is unreachable
+var FallbackSeedNodes = []string{
+	// Add stable fallback seeds here if needed
+}
+
+// FetchSeedNodes retrieves the current seed node list from GitHub
+func FetchSeedNodes() []string {
+	log.Printf("Fetching seed node list from GitHub...")
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", SeedNodeListURL, nil)
+	if err != nil {
+		log.Printf("Warning: Could not create request: %v", err)
+		log.Printf("Using fallback seed nodes")
+		return FallbackSeedNodes
+	}
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Warning: Could not fetch seed list from GitHub: %v", err)
+		log.Printf("Using fallback seed nodes")
+		return FallbackSeedNodes
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		log.Printf("Warning: GitHub seed list returned status %d", resp.StatusCode)
+		log.Printf("Using fallback seed nodes")
+		return FallbackSeedNodes
+	}
+
+	var seeds []string
+	scanner := bufio.NewScanner(resp.Body)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		seeds = append(seeds, line)
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("Warning: Error reading seed list: %v", err)
+		log.Printf("Using fallback seed nodes")
+		return FallbackSeedNodes
+	}
+
+	if len(seeds) == 0 {
+		log.Printf("Warning: No seeds found in GitHub list")
+		log.Printf("Using fallback seed nodes")
+		return FallbackSeedNodes
+	}
+
+	log.Printf("Loaded %d seed nodes from GitHub", len(seeds))
+	return seeds
+}
+
+// === Full Sync ===
+
+// tryFullSync attempts to get the complete galaxy state from a peer via /api/full-sync
+// This is the preferred method for new nodes to learn about the entire network quickly.
+// Returns the number of new systems learned, or error if full-sync is not available.
+func (dht *DHT) tryFullSync(address string) (int, error) {
+	fullSyncURL := fmt.Sprintf("http://%s/api/full-sync", address)
+
+	client := &http.Client{Timeout: 30 * time.Second} // Longer timeout for full sync
+	resp, err := client.Get(fullSyncURL)
+	if err != nil {
+		return 0, fmt.Errorf("full-sync request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, fmt.Errorf("full-sync not supported (v1.8.x or older)")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("full-sync returned status %d", resp.StatusCode)
+	}
+
+	var syncResp FullSyncResponse
+	if err := json.NewDecoder(resp.Body).Decode(&syncResp); err != nil {
+		return 0, fmt.Errorf("failed to parse full-sync response: %w", err)
+	}
+
+	log.Printf("  Full-sync received %d systems from %s (protocol v%s)",
+		syncResp.TotalCount, address, syncResp.ProtocolVersion)
+
+	// Cache all systems from the response
+	newSystems := 0
+
+	// Cache the local system from the sync response
+	if syncResp.LocalSystem.ID != "" {
+		localID, err := uuid.Parse(syncResp.LocalSystem.ID)
+		if err == nil && localID != dht.localSystem.ID {
+			sys := &System{
+				ID:          localID,
+				Name:        syncResp.LocalSystem.Name,
+				X:           syncResp.LocalSystem.X,
+				Y:           syncResp.LocalSystem.Y,
+				Z:           syncResp.LocalSystem.Z,
+				PeerAddress: syncResp.LocalSystem.PeerAddress,
+				InfoVersion: syncResp.LocalSystem.InfoVersion,
+			}
+			// Assign star type from class (simplified)
+			sys.Stars = assignStarFromClass(syncResp.LocalSystem.StarClass)
+
+			if existing := dht.routingTable.GetCachedSystem(localID); existing == nil {
+				newSystems++
+			}
+			dht.routingTable.CacheSystem(sys, localID, true) // Mark as verified since we got it directly
+		}
+	}
+
+	// Cache all other systems
+	for _, syncSys := range syncResp.Systems {
+		sysID, err := uuid.Parse(syncSys.ID)
+		if err != nil {
+			continue
+		}
+		if sysID == dht.localSystem.ID {
+			continue // Skip ourselves
+		}
+
+		sys := &System{
+			ID:          sysID,
+			Name:        syncSys.Name,
+			X:           syncSys.X,
+			Y:           syncSys.Y,
+			Z:           syncSys.Z,
+			PeerAddress: syncSys.PeerAddress,
+			InfoVersion: syncSys.InfoVersion,
+		}
+		sys.Stars = assignStarFromClass(syncSys.StarClass)
+
+		if existing := dht.routingTable.GetCachedSystem(sysID); existing == nil {
+			newSystems++
+		}
+
+		// Mark as verified only if the source says they verified it recently
+		verified := syncSys.LastSeen > 0 && time.Since(time.Unix(syncSys.LastSeen, 0)) < VerificationCutoff
+		dht.routingTable.CacheSystem(sys, uuid.Nil, verified)
+	}
+
+	return newSystems, nil
+}
+
+// assignStarFromClass creates a MultiStarSystem from a star class string
+func assignStarFromClass(class string) MultiStarSystem {
+	// Map class to star type - simplified version
+	starTypes := map[string]StarType{
+		"O": {Class: "O", Description: "Blue Giant", Color: "#9bb0ff", Temperature: 40000, Luminosity: 30000},
+		"B": {Class: "B", Description: "Blue-White Star", Color: "#aabfff", Temperature: 20000, Luminosity: 2000},
+		"A": {Class: "A", Description: "White Star", Color: "#cad7ff", Temperature: 9000, Luminosity: 25},
+		"F": {Class: "F", Description: "Yellow-White Star", Color: "#f8f7ff", Temperature: 7000, Luminosity: 5},
+		"G": {Class: "G", Description: "Yellow Star", Color: "#fff4ea", Temperature: 5500, Luminosity: 1},
+		"K": {Class: "K", Description: "Orange Star", Color: "#ffd2a1", Temperature: 4500, Luminosity: 0.4},
+		"M": {Class: "M", Description: "Red Dwarf", Color: "#ffcc6f", Temperature: 3000, Luminosity: 0.05},
+		"X": {Class: "X", Description: "Supermassive Black Hole", Color: "#000000", Temperature: 0, Luminosity: 0},
+	}
+
+	star, ok := starTypes[class]
+	if !ok {
+		star = starTypes["G"] // Default to G-class
+	}
+
+	return MultiStarSystem{
+		Primary:   star,
+		IsBinary:  false,
+		IsTrinary: false,
+		Count:     1,
+	}
+}
 
 // BootstrapConfig holds configuration for the bootstrap process
 type BootstrapConfig struct {
@@ -193,8 +381,8 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 
 	log.Printf("  Connected to %s (%s)", sys.Name, sys.ID.String()[:8])
 
-	// Add to routing table
-	dht.routingTable.Update(sys)
+	// Add to routing table (proper Kademlia LRS-ping if bucket full)
+	dht.updateRoutingTable(sys)
 	dht.routingTable.MarkVerified(sys.ID)
 
 	// Query for nodes close to us - now we know who we're talking to
@@ -204,7 +392,7 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 	}
 
 	for _, node := range closest {
-		dht.routingTable.Update(node)
+		dht.updateRoutingTable(node)
 	}
 
 	log.Printf("  Learned about %d nodes", len(closest))
@@ -289,7 +477,7 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 			continue
 		}
 
-		dht.routingTable.Update(fullSys)
+		dht.updateRoutingTable(fullSys)
 		dht.routingTable.MarkVerified(fullSys.ID)
 		connected++
 		log.Printf("    Connected to %s", fullSys.Name)
@@ -298,7 +486,7 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 		closest, err := dht.FindNodeDirectToSystem(fullSys, dht.localSystem.ID)
 		if err == nil {
 			for _, node := range closest {
-				dht.routingTable.Update(node)
+				dht.updateRoutingTable(node)
 			}
 		}
 
@@ -318,27 +506,37 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 func (dht *DHT) completeBootstrap() error {
 	log.Printf("Completing bootstrap process...")
 
-	// Step 1: Do an iterative lookup for ourselves
-	// This populates our routing table with relevant nodes
-	log.Printf("  Looking up our own ID to populate routing table...")
-	result := dht.FindNode(dht.localSystem.ID)
-	log.Printf("  Found %d close nodes in %d hops", len(result.ClosestNodes), result.Hops)
-
-	// Step 2: Refresh random buckets to learn about diverse parts of the network
-	log.Printf("  Refreshing random buckets...")
-	refreshed := 0
-	for i := 0; i < IDBits; i++ {
-		// Only refresh some buckets to avoid flooding
-		if i%10 == 0 || i < 10 {
-			randomID := dht.routingTable.RandomIDInBucket(i)
-			dht.FindNode(randomID)
-			refreshed++
+	// Step 1: Try full-sync from routing table peers (v1.9.0+ feature)
+	// This immediately gets the complete galaxy instead of iterative discovery
+	peers := dht.routingTable.GetAllRoutingTableNodes()
+	fullSyncSuccess := false
+	for _, peer := range peers {
+		if peer.PeerAddress == "" {
+			continue
 		}
+		newSystems, err := dht.tryFullSync(peer.PeerAddress)
+		if err != nil {
+			log.Printf("  Full-sync from %s failed: %v (falling back to Kademlia)", peer.Name, err)
+			continue
+		}
+		log.Printf("  Full-sync from %s: learned %d new systems", peer.Name, newSystems)
+		fullSyncSuccess = true
+		break // One successful full-sync is enough
 	}
-	log.Printf("  Refreshed %d buckets", refreshed)
 
-	// Step 3: Announce ourselves to closest nodes
+	// Step 2: If full-sync failed or unavailable, fall back to peer discovery
+	if !fullSyncSuccess {
+		log.Printf("  Full-sync unavailable, using peer discovery...")
+
+		// Do a lookup for ourselves to discover more peers
+		log.Printf("  Discovering peers via FIND_NODE...")
+		result := dht.FindNode(dht.localSystem.ID)
+		log.Printf("  Found %d peers", len(result.ClosestNodes))
+	}
+
+	// Step 3: Announce ourselves to closest nodes (always do this)
 	log.Printf("  Announcing to closest nodes...")
+	result := dht.FindNode(dht.localSystem.ID)
 	announced := 0
 	for _, sys := range result.ClosestNodes {
 		if sys.ID == dht.localSystem.ID || sys.PeerAddress == "" {

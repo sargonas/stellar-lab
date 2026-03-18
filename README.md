@@ -4,42 +4,44 @@ A silly program for homelabbers and others to run when you have a few spare megs
 
 ## Technical Overview
 
-Stellar Lab creates a virtual galaxy where each participant runs a node representing their star system. Systems have procedurally generated identities—star types, binary/trinary compositions, and 3D coordinates—all derived deterministically from cryptographic seeds. Nodes build reputation through cryptographically signed attestations of their interactions with peers.
+Stellar Lab creates a virtual galaxy where each participant runs a node representing their star system. Systems have procedurally generated identities... star types, binary/trinary compositions, and 3D coordinates... all derived deterministically from cryptographic seeds. Nodes build reputation through cryptographically signed attestations of their interactions with peers.
 
-**Key Properties:**
-- **Guaranteed discovery**: Any node can find any other node in O(log n) hops via DHT (Distributed Hash Table)
-- **Full galaxy awareness**: Every node eventually learns about every other node over time
-- **Organic clustering**: New systems spawn near their sponsor system, forming natural clusters
+**Core Features:**
+- **Immediate discovery**: New nodes learn galaxy state via a full-sync on bootstrap
+- **Full galaxy awareness**: Every node knows about every other node via peer gossiping
+- **Simple gossip**: Peers share what they know about each other peer
+- **Organic clustering**: New systems are asigned a sponsor with open slots, spawning near their sponsor, forming natural clusters
 - **Scalable**: Designed for tens of thousands of nodes but *can* go higher easily
-- **Tamper-resistant**: Identity binding, coordinate validation, and attestation verification prevent common spoofing attacks, though this isn't a blockchain and isn't meant to be one and there may be gaps in my design!
+- **Resilient**: Identity binding, coordinate validation, and attestation verification prevent common spoofing attacks, (though this isn't a blockchain and isn't meant to be one and there may be gaps in my design!)
 
-## Features
+## Other Features
 
 - **Unique Identity**: UUID generated from hardware fingerprint, cryptographically bound to your keypair
 - **Multi-Star Systems**: Single (50%), Binary (40%), and Trinary (10%) system probabilities
 - **Star Classification**: Semi-Realistic distribution (O, B, A, F, G, K, M classes) adjusted for practical network sizes
 - **Peer Capacity**: Star class determines max connections (M-class: 10, scaling up to O-class: 18+)
 - **Spatial Clustering**: New nodes spawn 100-500 units from their sponsor system
-- **DHT Routing**: Kademlia-style k-bucket routing with XOR distance metric
+- **Gossip Network**: Full-visibility peer discovery with verification
 - **Cryptographic Identity**: Ed25519 keypairs for authentication
 - **Attestation System**: Signed proofs of every peer interaction
 - **Stellar Credits**: Earn credits for uptime with bonuses for network contribution
 - **Web Interface**: Dashboard with interactive galaxy map visualization
-- **Persistent Storage**: SQLite database preserves identity across restarts
+- **Persistent Storage**: SQLite database preserves identity across restarts (keep backups my friends!)
+
+![WebUI](webui.png)
 
 ## Stellar Credits
 
-Nodes earn Stellar Credits based on verified uptime, with bonuses that reward healthy network participation.
+Nodes earn Stellar Credits based on verified uptime, with bonuses that reward healthy network participation. At this time they have no function but stubbed out hooks are in place for validation to support things like future transfers.
 
 ### Base Rate
 - **1 credit per hour** of verified uptime
-- Normalized across all star types (an M-class earns the same as an O-class despite more peers)
 
 ### Bonuses
 
 | Bonus | Max | Description |
 |-------|-----|-------------|
-| **Bridge** | +50% | Being critical for network connectivity (peers depend on you to reach the galaxy) |
+| **Bridge** | +50% | Being critical for network connectivity (peers depend on you to reach the rest of the galaxy) |
 | **Longevity** | +52% | +1% per week of continuous uptime, capping at 1 year |
 | **Pioneer** | +30% | Participating when the network is small (scales down as network grows past 20 nodes, reaches 0% at 100+) |
 | **Reciprocity** | +5% | Healthy bidirectional relationships with peers |
@@ -77,7 +79,7 @@ docker run -d \
 
 A sample `docker-compose.yml` is included in the repository.
 
-**Important**: If running multiple nodes on the same host, each needs unique internal *AND* external ports:
+**Important**: If running multiple nodes on the same host, each needs unique internal *AND* external ports, as the internal ports is what is advertised externally to peers:
 ```yaml
 # Node 1
 ports: ["8080:8080", "7867:7867"]
@@ -87,6 +89,8 @@ STELLAR_PUBLIC_ADDRESS: "your-domain.com:7867"
 ports: ["8081:8081", "7868:7868"]
 STELLAR_PUBLIC_ADDRESS: "your-domain.com:7868"
 ```
+
+(I'm aware the port relations are a bit counter intuitive, and this is a to-do item for me to work on to make the advertised ports somehow correlate to the docker config, if possible)
 
 ## Building from Source
 
@@ -155,14 +159,22 @@ All settings can be configured via command-line flags or environment variables. 
 
 ## Architecture
 
-### DHT Design
+### Network Discovery
 
-Stellar Lab uses a Kademlia-inspired Distributed Hash Table:
+Stellar Lab uses a simple gossip-based approach for network discovery:
 
-- **128-bit Node IDs**: Derived from system UUIDs via SHA-256
-- **XOR Distance Metric**: Determines "closeness" in the network
-- **K-Buckets**: 128 buckets with capacity varying by star class
-- **Iterative Lookups**: Parallel queries for O(log n) discovery
+1. **Full-Sync Bootstrap**: New nodes request complete galaxy state from their bootstrap peer via `/api/full-sync`. This provides immediate awareness of all verified systems.
+
+2. **Peer Sharing**: Nodes share their known peers with each other via FIND_NODE requests, allowing organic discovery of the full network.
+
+3. **Gossip Validation**: Systems learned via gossip are verified through direct contact before being shared with others, preventing "ghost node" propagation.
+
+### Peer Management
+
+- **Simple Map**: All known peers stored in a single map (no complex routing)
+- **Verification Tracking**: Peers marked as verified after successful direct contact
+- **Version Tracking**: InfoVersion prevents stale gossip from overwriting fresh data
+- **Automatic Cleanup**: Unverified peers pruned after 48h, dead peers evicted after 6 failures
 
 ### Dual-Port Design
 
@@ -170,28 +182,28 @@ Each node runs two HTTP servers:
 - **Web UI** (default :8080): Dashboard and JSON APIs for users
 - **DHT Protocol** (default :7867): Node-to-node communication
 
-### DHT Operations
+### Protocol Operations
 
 | Operation | Description |
 |-----------|-------------|
 | `PING` | Liveness check with system info exchange |
-| `FIND_NODE` | Request K closest nodes to a target ID |
-| `ANNOUNCE` | Register presence with closest nodes |
+| `FIND_NODE` | Request known peers from another node |
+| `ANNOUNCE` | Register presence with known peers |
 
 ### Background Processes
 
 | Process | Interval | Purpose |
 |---------|----------|---------|
-| Announce | 30 min | Re-announce to K closest nodes |
-| Refresh | 60 min | Refresh stale routing buckets |
-| Liveness | 5 min | Ping peers, evict unresponsive nodes |
-| Cache Prune | 6 hours | Remove stale cache entries (>24h) |
+| Announce | 30 min | Re-announce to known peers |
+| Liveness | 5 min | Ping sample of 50 peers, evict unresponsive nodes |
+| Gossip Validation | 10 min | Verify unverified systems learned via gossip |
+| Cache Prune | 2 hours | Remove stale cache entries (>48h unverified) |
 | Compaction | Daily 3 AM | Aggregate old attestations into summaries |
 | Credits | 1 hour | Calculate and award earned credits |
 
 ### Star Types & Peer Capacity
 
-Star class determines maximum routing table connections:
+Star class determines maximum peer connections:
 
 | Class | Type | Distribution | Max Peers |
 |-------|------|--------------|-----------|
@@ -227,12 +239,14 @@ Star class determines maximum routing table connections:
 | `GET /api/stats` | Network statistics |
 | `GET /api/credits` | Credit balance and rank |
 | `GET /api/connections` | Peer connection topology |
+| `GET /api/version` | Node's software version |
 
 ### DHT Protocol Server (:7867)
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/discovery` | Bootstrap discovery info |
+| `GET /api/full-sync` | Complete galaxy state (all verified systems) |
 | `POST /dht` | DHT message handler |
 | `GET /system` | System info for peers |
 
@@ -241,14 +255,13 @@ Star class determines maximum routing table connections:
 The dashboard displays:
 
 - **System Info**: Name, UUID, star classification, coordinates
-- **DHT Statistics**: Routing table size, known systems, cache size
-- **Stellar Credits**: Balance, rank, and progress to next rank
-- **Health Status**: Connectivity indicator (Healthy/Warning/Isolated)
-- **Peer List**: Connected systems with coordinates
-- **Galaxy Map**: Interactive 2D visualization with connection lines
-  - Drag to pan, scroll to zoom
+- **Network Status**: Known Systems, Active/Degraded/Pending/Stale status of each, Peer max, Attestation count and DB size
+- **Stellar Credits**: Balance, rank, progress to next rank, and longevity streak progress
+- **Routing Table List**: Connected systems with UUID and coordinates
+- **Galaxy Map**: Interactive 3D visualization with connection lines
+  - Left click Drag to rotate, Right Click drag to pan, scroll to zoom
   - Hover for system details
-  - Your system highlighted in blue
+  - Your system highlighted in blue pulse ring
 
 ## Database
 
@@ -256,39 +269,38 @@ The dashboard displays:
 
 | Table | Purpose |
 |-------|---------|
-| `system` | Local node identity, keypair, coordinates |
-| `peers` | Known peer addresses |
-| `peer_systems` | Cached remote system info |
-| `peer_connections` | Tracks peer relationships |
-| `identity_bindings` | UUID to public key mapping (spoofing prevention) |
-| `attestations` | Recent signed interaction proofs |
-| `attestation_summaries` | Compacted historical data |
+| `system` | Local node identity, keypair, coordinates, sponsor info |
+| `peer_systems` | Cache of known remote system info |
+| `peer_connections` | Tracks peer relationships galaxy wide |
+| `identity_bindings` | UUID to public key mapping (for spoofing prevention) |
+| `attestations` | Recent signed interaction proofs with sender, receiver, timestamp, message type, and verified status |
 | `credit_balance` | Stellar credits and streak tracking |
-| `credit_transfers` | Transfer history (future feature) |
-| `verified_transfers` | Validated transfers (future feature) |
+| `credit_transfers` | Transfer history (future use prep) |
+| `verified_transfers` | Validated transfers (future use prep) |
 
 ### Backup
 
-Your identity lives in the database file. Back it up to preserve your UUID, keypair, coordinates, and credit balance across hardware changes.
+Your identity lives in the database file. Back it up to preserve your UUID, keypair, coordinates, and credit balance across hardware changes and server migrations.
 
 ## Troubleshooting
 
 ### Node stays isolated
 
 ```bash
-# Check if seed nodes are reachable
+# Check if seed nodes are reachable or failing
 curl http://localhost:7867/api/discovery
 
-# Verify SEED-NODES.txt is accessible
+# Verify that SEED-NODES.txt is accessible
 curl https://raw.githubusercontent.com/sargonas/stellar-lab/main/SEED-NODES.txt
 
-# Try explicit bootstrap
-./stellar-lab -name "Test" -public-address "you.com:7867" -bootstrap "known-peer:7867"
+# Try an explicit bootstrap to a known system
+./stellar-lab -name "WhyUNoWorky" -public-address "your-domain.com:7867" -bootstrap "known-good.peer:7867"
 ```
 
 ### Port conflicts
 
 ```bash
+# Are your ports even free bro?
 lsof -i :8080
 lsof -i :7867
 
@@ -303,14 +315,14 @@ Each node needs unique ports for BOTH the web UI (-address) AND the DHT (-public
 ### Database errors
 
 ```bash
-# Reset and start fresh (loses identity!)
+# Reset and start fresh (this means you will loose your identity! Break glass in case of emergency-type move!)
 rm stellar-lab.db
 ./stellar-lab -name "Sol" -public-address "you.com:7867"
 ```
 
 ### You made a deployment mistake and now have duplicate systems!
 
-Oh no, you deployed your system with a bad name or other config error, fixed it, and re deployed it and now there are two on the map and in the tables? FEAR NOT! After about an hour or so the system's housekeeping will drop them off the tables, and after a day or so they will be gone entirely from maps!
+Oh no, you deployed your system with a bad name or other config error, fixed it, and re deployed it and now there are two on the map and in the tables? FEAR NOT! After about an hour or so the system's housekeeping will drop them off the gossip tables, and after 36 hours or so they will be gone entirely from galactic maps and tables!
 
 ## Contributing
 
@@ -327,9 +339,8 @@ To add your node as a seed:
 
 1. MUCH better Web UI. It should always be lightweight and simple, but it can be far better than what we have at the moment!
 2. Improve the actual map on the Web UI
-3. API improvements. Right now it is the same port as the WebUI. I want to either split more of the API between Web and protocol, so that people can keep the webUI and some endpoints behind a firewall and expose others, or make a completely separate API port with public and private endpoints
-4. Beacon system. I would like to trigger a "beacon" once every 24 hours in a random system, and every system on the shortest path between the previous beacon and the new one gets a credit bonus.
-5. Eventually, let people send and recieve stellar credits between systems, but this is WAY out there for now.
+3. Beacon system. I would like to trigger a "beacon" once every 24 hours in a random system, and every system on the shortest path between the previous beacon and the new one gets a credit bonus.
+4. Eventually, let people send and recieve stellar credits between systems, but this is WAY out there for now.
 
 ## License
 
