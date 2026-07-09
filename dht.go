@@ -410,9 +410,9 @@ func (dht *DHT) checkInboundStatus() {
 	dht.lastInboundWarning = time.Now()
 	dht.inboundMu.Unlock()
 
-	log.Printf("WARNING: No inbound connections received after 10 minutes.")
-	log.Printf("  Your node may be in outbound-only mode (can see network but others can't reach you).")
-	log.Printf("  Check that port %s is open and forwarded correctly, as UPnP may have failed.", dht.listenAddr)
+	errLog.Printf("WARNING: No inbound connections received after 10 minutes.")
+	errLog.Printf("  Your node may be in outbound-only mode (can see network but others can't reach you).")
+	errLog.Printf("  Check that port %s is open and forwarded correctly, as UPnP may have failed.", dht.listenAddr)
 }
 
 // updateRoutingTable adds a node to the peer cache
@@ -434,7 +434,7 @@ func (dht *DHT) serveHTTP(listener net.Listener) {
 
 	log.Printf("DHT listening on %s", dht.listenAddr)
 	if err := http.Serve(listener, mux); err != nil {
-		log.Printf("DHT server error: %v", err)
+		errLog.Printf("DHT server error: %v", err)
 	}
 }
 
@@ -475,12 +475,12 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 		pubKeyStr := base64.StdEncoding.EncodeToString(msg.FromSystem.Keys.PublicKey)
 		valid, isNew, err := dht.storage.ValidateIdentityBinding(msg.FromSystem.ID, pubKeyStr)
 		if err != nil {
-			log.Printf("Identity binding check failed: %v", err)
+			errLog.Printf("Identity binding check failed: %v", err)
 			dht.sendError(w, ErrCodeInternalError, "identity validation error")
 			return
 		}
 		if !valid {
-			log.Printf("UUID spoofing attempt detected: %s", msg.FromSystem.ID)
+			errLog.Printf("UUID spoofing attempt detected: %s", msg.FromSystem.ID)
 			dht.sendError(w, ErrCodeInvalidMessage, "identity mismatch: UUID bound to different key")
 			return
 		}
@@ -510,7 +510,7 @@ func (dht *DHT) handleDHTMessage(w http.ResponseWriter, r *http.Request) {
 	// Note: We pass our ID separately to preserve the original signed attestation
 	// The attestation's ToSystemID (uuid.Nil) stays unchanged so signature remains valid
 	if err := dht.storage.SaveAttestation(msg.Attestation, dht.localSystem.ID); err != nil {
-		log.Printf("Failed to save attestation: %v", err)
+		errLog.Printf("Failed to save attestation: %v", err)
 	}
 
 	// Update routing table with sender's info (proper Kademlia LRS-ping if bucket full)
@@ -923,7 +923,7 @@ func (dht *DHT) PingNode(sys *System) error {
 	// Check if the responding system matches who we expected
 	if resp.FromSystem != nil && resp.FromSystem.ID != sys.ID {
 		// Different node responded - the address now belongs to someone else
-		log.Printf("UUID mismatch at %s: expected %s (%s), got %s (%s) - removing stale entry",
+		errLog.Printf("UUID mismatch at %s: expected %s (%s), got %s (%s) - removing stale entry",
 			sys.PeerAddress,
 			sys.ID.String()[:8], sys.Name,
 			resp.FromSystem.ID.String()[:8], resp.FromSystem.Name)
@@ -931,7 +931,7 @@ func (dht *DHT) PingNode(sys *System) error {
 		// Remove stale entry from routing table and storage
 		dht.routingTable.Remove(sys.ID)
 		if err := dht.storage.DeletePeerSystem(sys.ID); err != nil {
-			log.Printf("Warning: failed to delete stale peer system %s: %v", sys.ID.String()[:8], err)
+			errLog.Printf("Warning: failed to delete stale peer system %s: %v", sys.ID.String()[:8], err)
 		}
 
 		// Don't return error - address is live, just different owner
@@ -1007,7 +1007,7 @@ func (dht *DHT) warnIfOldProtocol(msg *DHTMessage) {
 	}
 
 	// Log warning
-	log.Printf("⚠ %s (%s) is using old protocol v%s without targeted attestations. "+
+	errLog.Printf("⚠ %s (%s) is using old protocol v%s without targeted attestations. "+
 		"They should upgrade to v1.6.0+.",
 		msg.FromSystem.Name, msg.FromSystem.ID.String()[:8], msg.Version)
 
@@ -1062,7 +1062,7 @@ func (dht *DHT) FindNode(targetID uuid.UUID) *LookupResult {
 	// Get initial closest nodes from our routing table
 	shortlist := dht.routingTable.GetClosest(targetID, Alpha)
 	if len(shortlist) == 0 {
-		log.Printf("FindNode: no nodes in routing table, cannot lookup %s", targetID.String()[:8])
+		errLog.Printf("FindNode: no nodes in routing table, cannot lookup %s", targetID.String()[:8])
 		result.Duration = time.Since(startTime)
 		return result
 	}

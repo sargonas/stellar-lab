@@ -32,7 +32,7 @@ func FetchSeedNodes() []string {
 
 	req, err := http.NewRequest("GET", SeedNodeListURL, nil)
 	if err != nil {
-		log.Printf("Warning: Could not create request: %v", err)
+		errLog.Printf("Warning: Could not create request: %v", err)
 		log.Printf("Using fallback seed nodes")
 		return FallbackSeedNodes
 	}
@@ -40,14 +40,14 @@ func FetchSeedNodes() []string {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Warning: Could not fetch seed list from GitHub: %v", err)
+		errLog.Printf("Warning: Could not fetch seed list from GitHub: %v", err)
 		log.Printf("Using fallback seed nodes")
 		return FallbackSeedNodes
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		log.Printf("Warning: GitHub seed list returned status %d", resp.StatusCode)
+		errLog.Printf("Warning: GitHub seed list returned status %d", resp.StatusCode)
 		log.Printf("Using fallback seed nodes")
 		return FallbackSeedNodes
 	}
@@ -67,13 +67,13 @@ func FetchSeedNodes() []string {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("Warning: Error reading seed list: %v", err)
+		errLog.Printf("Warning: Error reading seed list: %v", err)
 		log.Printf("Using fallback seed nodes")
 		return FallbackSeedNodes
 	}
 
 	if len(seeds) == 0 {
-		log.Printf("Warning: No seeds found in GitHub list")
+		errLog.Printf("Warning: No seeds found in GitHub list")
 		log.Printf("Using fallback seed nodes")
 		return FallbackSeedNodes
 	}
@@ -229,7 +229,7 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 			}
 			log.Printf("  Pinging cached peer: %s (%s)", peer.Name, peer.PeerAddress)
 			if err := dht.PingNode(peer); err != nil {
-				log.Printf("    Failed: %v", err)
+				errLog.Printf("    Failed: %v", err)
 				continue
 			}
 			log.Printf("    Connected!")
@@ -270,7 +270,7 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		for _, seedAddr := range config.SeedNodes {
 			log.Printf("Trying seed node: %s", seedAddr)
 			if err := dht.bootstrapFromSeed(seedAddr); err != nil {
-				log.Printf("  Failed: %v", err)
+				errLog.Printf("  Failed: %v", err)
 				continue
 			}
 			log.Printf("Successfully bootstrapped from seed node")
@@ -285,7 +285,7 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 		for _, seedAddr := range seedNodes {
 			log.Printf("Trying seed node: %s", seedAddr)
 			if err := dht.bootstrapFromSeed(seedAddr); err != nil {
-				log.Printf("  Failed: %v", err)
+				errLog.Printf("  Failed: %v", err)
 				continue
 			}
 			log.Printf("Successfully bootstrapped from seed node")
@@ -296,11 +296,11 @@ func (dht *DHT) Bootstrap(config BootstrapConfig) error {
 	// When no bootstrap sources available
 	rtSize := dht.routingTable.GetRoutingTableSize()
 	if rtSize > 0 {
-		log.Printf("Warning: Could not contact any seed nodes, but have %d cached peers", rtSize)
+		errLog.Printf("Warning: Could not contact any seed nodes, but have %d cached peers", rtSize)
 		return dht.completeBootstrap()
 	}
 
-	log.Printf("Warning: Could not find any bootstrap peers")
+	errLog.Printf("Warning: Could not find any bootstrap peers")
 	log.Printf("  Your node is running but isolated")
 	log.Printf("  Other nodes can still connect to you directly")
 	return nil
@@ -330,7 +330,7 @@ func (dht *DHT) becomeGenesisNode() {
 
 	// Save to database
 	if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
-		log.Printf("Warning: failed to save genesis state: %v", err)
+		errLog.Printf("Warning: failed to save genesis state: %v", err)
 	}
 
 	log.Printf("✦ Now operating as genesis black hole at origin (0,0,0) ✦")
@@ -369,7 +369,7 @@ func (dht *DHT) bootstrapFromPeer(address string) error {
 
 		// Save updated coordinates to database
 		if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
-			log.Printf("  Warning: failed to save coordinates: %v", err)
+			errLog.Printf("  Warning: failed to save coordinates: %v", err)
 		}
 	}
 
@@ -452,7 +452,7 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 
 				// Save updated coordinates to database
 				if err := dht.storage.SaveSystem(dht.localSystem); err != nil {
-					log.Printf("  Warning: failed to save coordinates: %v", err)
+					errLog.Printf("  Warning: failed to save coordinates: %v", err)
 				}
 			}
 		}
@@ -473,7 +473,7 @@ func (dht *DHT) bootstrapFromSeed(seedAddr string) error {
 		// Ping to establish connection and get full system info
 		fullSys, err := dht.Ping(sys.PeerAddress)
 		if err != nil {
-			log.Printf("    Failed to ping %s: %v", sys.Name, err)
+			errLog.Printf("    Failed to ping %s: %v", sys.Name, err)
 			continue
 		}
 
@@ -516,7 +516,7 @@ func (dht *DHT) completeBootstrap() error {
 		}
 		newSystems, err := dht.tryFullSync(peer.PeerAddress)
 		if err != nil {
-			log.Printf("  Full-sync from %s failed: %v (falling back to Kademlia)", peer.Name, err)
+			errLog.Printf("  Full-sync from %s failed: %v (falling back to Kademlia)", peer.Name, err)
 			continue
 		}
 		log.Printf("  Full-sync from %s: learned %d new systems", peer.Name, newSystems)

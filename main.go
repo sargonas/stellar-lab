@@ -32,12 +32,12 @@ func main() {
 	// Clean and validate the star system name
 	cleanName := sanitizeStarName(*name)
 	if err := validateStarName(cleanName); err != nil {
-		log.Fatalf("Error: %v", err)
+		errLog.Fatalf("Error: %v", err)
 	}
 
 	// Validate public address is specified
 	if *publicAddr == "" {
-		log.Fatal("Error: -public-address or STELLAR_PUBLIC_ADDRESS is required (e.g., \"myhost.com:7867\")")
+		errLog.Fatal("Error: -public-address or STELLAR_PUBLIC_ADDRESS is required (e.g., \"myhost.com:7867\")")
 	}
 
 	peerAddr := *publicAddr
@@ -72,7 +72,7 @@ func main() {
 	// Initialize storage
 	storage, err := NewStorage(*dbPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize storage: %v", err)
+		errLog.Fatalf("Failed to initialize storage: %v", err)
 	}
 
 	// Try to load existing system or create new one
@@ -93,7 +93,7 @@ func main() {
 		// Generate cryptographic keys
 		keys, err := GenerateKeyPair()
 		if err != nil {
-			log.Fatalf("Failed to generate keys: %v", err)
+			errLog.Fatalf("Failed to generate keys: %v", err)
 		}
 
 		system = &System{
@@ -118,7 +118,7 @@ func main() {
 
 		// Save to database
 		if err := storage.SaveSystem(system); err != nil {
-			log.Fatalf("Failed to save system: %v", err)
+			errLog.Fatalf("Failed to save system: %v", err)
 		}
 	} else {
 		log.Printf("Loaded existing star system: %s", system.Name)
@@ -147,12 +147,12 @@ func main() {
 
 	// Start DHT (HTTP server + maintenance loops)
 	if err := dht.Start(); err != nil {
-		log.Fatalf("Failed to start DHT: %v", err)
+		errLog.Fatalf("Failed to start DHT: %v", err)
 	}
 
 	// Start web interface
 	if err := webInterface.Start(); err != nil {
-		log.Fatalf("Failed to start web interface: %v", err)
+		errLog.Fatalf("Failed to start web interface: %v", err)
 	}
 
 	log.Printf("DHT protocol started")
@@ -175,7 +175,7 @@ func main() {
 		}
 
 		if err := dht.Bootstrap(config); err != nil {
-			log.Printf("Bootstrap warning: %v", err)
+			errLog.Printf("Bootstrap warning: %v", err)
 		}
 
 		// If this is a new node at origin (0,0,0), update coordinates near a peer

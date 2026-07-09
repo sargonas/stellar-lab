@@ -98,7 +98,7 @@ func (w *WebInterface) Start() error {
     log.Printf("Web interface listening on %s", w.addr)
     go func() {
         if err := http.Serve(listener, mux); err != nil {
-            log.Printf("Web server error: %v", err)
+            errLog.Printf("Web server error: %v", err)
         }
     }()
 

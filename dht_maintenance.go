@@ -129,7 +129,7 @@ func (dht *DHT) announceToNetwork() {
 		}
 
 		if err := dht.AnnounceToSystem(sys); err != nil {
-			log.Printf("  Failed to announce to %s: %v", sys.Name, err)
+			errLog.Printf("  Failed to announce to %s: %v", sys.Name, err)
 			dht.routingTable.MarkFailed(sys.ID)
 		} else {
 			announced++
@@ -227,11 +227,11 @@ func (dht *DHT) validateGossipSystems() {
 		} else if respSystem != nil && respSystem.ID != sys.ID {
 			// UUID mismatch - a different system now lives at this address
 			// The gossip entry is stale, remove it
-			log.Printf("  %s (%s): UUID mismatch - address now belongs to %s (%s), removing stale entry",
+			errLog.Printf("  %s (%s): UUID mismatch - address now belongs to %s (%s), removing stale entry",
 				sys.Name, sys.ID.String()[:8], respSystem.Name, respSystem.ID.String()[:8])
 			dht.routingTable.RemoveFromCache(sys.ID)
 			if err := dht.storage.DeletePeerSystem(sys.ID); err != nil {
-				log.Printf("Warning: failed to delete stale peer system %s: %v", sys.ID.String()[:8], err)
+				errLog.Printf("Warning: failed to delete stale peer system %s: %v", sys.ID.String()[:8], err)
 			}
 			removed++
 		} else {
@@ -256,7 +256,7 @@ func (dht *DHT) pruneCache() {
 	// Prune peer_systems table
 	prunedSystems, err := dht.storage.PrunePeerSystems(CacheMaxAge)
 	if err != nil {
-		log.Printf("Error pruning peer systems: %v", err)
+		errLog.Printf("Error pruning peer systems: %v", err)
 	} else if prunedSystems > 0 {
 		log.Printf("Pruned %d stale entries from peer_systems table", prunedSystems)
 	}
@@ -264,7 +264,7 @@ func (dht *DHT) pruneCache() {
 	// Prune peer_connections table
 	prunedConns, err := dht.storage.PrunePeerConnections(CacheMaxAge)
 	if err != nil {
-		log.Printf("Error pruning peer connections: %v", err)
+		errLog.Printf("Error pruning peer connections: %v", err)
 	} else if prunedConns > 0 {
 		log.Printf("Pruned %d stale entries from peer_connections table", prunedConns)
 	}
@@ -324,7 +324,7 @@ func (dht *DHT) calculateCredits() {
 	// Get current balance
 	balance, err := dht.storage.GetCreditBalance(dht.localSystem.ID)
 	if err != nil {
-		log.Printf("  ERROR: Failed to get credit balance: %v", err)
+		errLog.Printf("  ERROR: Failed to get credit balance: %v", err)
 		return
 	}
 
@@ -334,7 +334,7 @@ func (dht *DHT) calculateCredits() {
 	// Get attestations since last calculation
 	attestations, err := dht.storage.GetAttestationsSince(dht.localSystem.ID, balance.LastUpdated)
 	if err != nil {
-		log.Printf("  ERROR: Failed to get attestations: %v", err)
+		errLog.Printf("  ERROR: Failed to get attestations: %v", err)
 		return
 	}
 
@@ -396,7 +396,7 @@ func (dht *DHT) calculateCredits() {
 		balance.LongevityStart = result.NewLongevityStart
 
 		if err := dht.storage.SaveCreditBalance(balance); err != nil {
-			log.Printf("  ERROR: Failed to save credit balance: %v", err)
+			errLog.Printf("  ERROR: Failed to save credit balance: %v", err)
 			return
 		}
 

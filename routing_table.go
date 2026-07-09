@@ -463,7 +463,7 @@ func (rt *RoutingTable) loadFromStorage() {
 
 	systemsWithMeta, err := rt.storage.GetAllPeerSystemsWithMeta()
 	if err != nil {
-		log.Printf("Failed to load peer systems from storage: %v", err)
+		errLog.Printf("Failed to load peer systems from storage: %v", err)
 		return
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"runtime"
@@ -192,7 +191,7 @@ func (n *NATTraversal) renewLoop(description string, leaseDuration time.Duration
 			_, err := n.nat.AddPortMapping(ctx, "tcp", n.port, description, leaseDuration)
 			cancel()
 			if err != nil {
-				log.Printf("UPnP/NAT-PMP: failed to renew port mapping: %v", err)
+				errLog.Printf("UPnP/NAT-PMP: failed to renew port mapping: %v", err)
 			}
 		case <-n.stopChan:
 			return
@@ -207,7 +206,7 @@ func (n *NATTraversal) Close() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := n.nat.DeletePortMapping(ctx, "tcp", n.port); err != nil {
-			log.Printf("UPnP/NAT-PMP: failed to remove port mapping: %v", err)
+			errLog.Printf("UPnP/NAT-PMP: failed to remove port mapping: %v", err)
 		}
 	}
 }
